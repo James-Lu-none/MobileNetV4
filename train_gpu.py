@@ -53,7 +53,7 @@ def get_args_parser():
     parser = argparse.ArgumentParser(
         'MobileNetV4 training and evaluation script', add_help=False)
     parser.add_argument('--batch-size', default=16, type=int)
-    parser.add_argument('--epochs', default=5, type=int)
+    parser.add_argument('--epochs', default=400, type=int)
     parser.add_argument('--predict', default=True, type=bool, help='plot ROC curve and confusion matrix')
     parser.add_argument('--opt_auc', default=False, type=bool, help='Optimize AUC')
 
@@ -168,16 +168,16 @@ def get_args_parser():
     parser.add_argument('--distillation-tau', default=1.0, type=float, help="")
 
     # Finetuning params
-    parser.add_argument('--finetune', default='./models/model.safetensors',
+    parser.add_argument('--finetune', default='', #權重檔路徑
                         help='finetune from checkpoint')
     parser.add_argument('--freeze_layers', type=bool, default=False, help='freeze layers')
     parser.add_argument('--set_bn_eval', action='store_true', default=False,
                         help='set BN layers to eval mode during finetuning.')
 
     # Dataset parameters
-    parser.add_argument('--data_root', default='D:/flower_data', type=str,
+    parser.add_argument('--data_root', default='./datasets/imagenet1k', type=str,
                         help='dataset path')
-    parser.add_argument('--nb_classes', default=5, type=int,
+    parser.add_argument('--nb_classes', default=1000, type=int,
                         help='number classes of your dataset')
     parser.add_argument('--data-set', default='IMNET', choices=['CIFAR', 'IMNET', 'INAT', 'INAT19'],
                         type=str, help='Image Net dataset path')
@@ -416,7 +416,7 @@ def main(args):
                 args.resume, map_location='cpu', check_hash=True)
         else:
             print("Loading local checkpoint at {}".format(args.resume))
-            checkpoint = torch.load(args.resume, map_location='cpu')
+            checkpoint = torch.load(args.resume, map_location='cpu', weights_only=False)
         msg = model_without_ddp.load_state_dict(checkpoint['model'])
         print(msg)
         if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:

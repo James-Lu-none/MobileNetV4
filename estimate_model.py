@@ -39,7 +39,8 @@ def Plot_ROC(net: torch.nn.Module, val_loader: Iterable, save_name: str, device:
     score_list = []
     label_list = []
 
-    net.load_state_dict(torch.load(save_name)['model'])
+    checkpoint = torch.load(save_name, map_location=device, weights_only=False)
+    net.load_state_dict(checkpoint['model'])
 
     for i, data in enumerate(val_loader):
         images, labels = data
@@ -215,7 +216,8 @@ def Predictor(net: torch.nn.Module, test_loader: Iterable, save_name: str, devic
 
     errors = 0
     y_pred, y_true = [], []
-    net.load_state_dict(torch.load(save_name)['model'])
+    checkpoint = torch.load(save_name, map_location=device, weights_only=False)
+    net.load_state_dict(checkpoint['model'])
 
     net.eval()
 
@@ -302,7 +304,8 @@ def OptAUC(net: torch.nn.Module, val_loader: Iterable, save_name: str, device: t
     score_list = []
     label_list = []
 
-    net.load_state_dict(torch.load(save_name)['model'])
+    checkpoint = torch.load(save_name, map_location=device, weights_only=False)
+    net.load_state_dict(checkpoint['model'])
 
     for i, data in enumerate(val_loader):
         images, labels = data
