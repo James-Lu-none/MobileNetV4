@@ -14,6 +14,7 @@
 ### Create conda virtual-environment
 ```bash
 conda env create -f environment.yml
+pip install torch==2.0.1+cu118 --index-url https://download.pytorch.org/whl/cu118
 ```
 
 ### Download the dataset: 
