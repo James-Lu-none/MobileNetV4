@@ -4,6 +4,11 @@ __pycache__/
 *$py.class
 .idea/
 
+*.jpg
+*.jpeg
+*.png
+*.zip
+*.tgz
 # ckpt files
 *.safetensors
 *.bin
