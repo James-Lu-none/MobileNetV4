@@ -1,16 +1,15 @@
-from typing import Callable, Dict, Optional, Type
+from typing import Callable, Dict, Optional, Type, List, Optional, Type, Union
 
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
 from timm.layers import create_conv2d, DropPath, create_act_layer, create_aa, to_2tuple, LayerType,\
-    ConvNormAct, get_norm_act_layer, MultiQueryAttention2d, Attention2d
-
-
+    ConvNormAct, get_norm_act_layer
+from timm.layers import use_fused_attn, to_2tuple
 
 __all__ = [
-    'SqueezeExcite', 'ConvBnAct', 'DepthwiseSeparableConv', 'InvertedResidual', 'CondConvResidual', 'EdgeResidual',
+    'SqueezeExcite', 'ConvBnAct', 'DepthwiseSeparableConv', 'DynamicDepthwiseSeparableConv', 'InvertedResidual', 'CondConvResidual', 'EdgeResidual',
     'UniversalInvertedResidual', 'MobileAttention'
 ]
 
@@ -203,6 +202,210 @@ class DepthwiseSeparableConv(nn.Module):
         if self.has_skip:
             x = self.drop_path(x) + shortcut
         return x
+
+
+class DynamicDepthwiseSeparableConv(nn.Module):
+    """ Dynamic Depthwise-separable block
+    Used for DS convs in MobileNet-V1 and in the place of IR blocks that have no expansion
+    (factor of 1.0). This is an alternative to having a IR with an optional first pw conv.
+    """
+    def __init__(
+            self,
+            in_chs: int,
+            out_chs: int,
+            dw_kernel_size: int = 3,
+            stride: int = 1,
+            dilation: int = 1,
+            group_size: int = 1,
+            pad_type: str = '',
+            noskip: bool = False,
+            pw_kernel_size: int = 1,
+            pw_act: bool = False,
+            s2d: int = 0,
+            act_layer: LayerType = nn.ReLU,
+            norm_layer: LayerType = nn.BatchNorm2d,
+            aa_layer: Optional[LayerType] = None,
+            se_layer: Optional[ModuleType] = None,
+            drop_path_rate: float = 0.,
+            dynamic_K: int = 4,
+            dynamic_temperature: int = 34,
+            dynamic_ratio: float = 0.25,
+    ):
+        super(DynamicDepthwiseSeparableConv, self).__init__()
+        norm_act_layer = get_norm_act_layer(norm_layer, act_layer)
+        self.has_skip = (stride == 1 and in_chs == out_chs) and not noskip
+        self.has_pw_act = pw_act  # activation after point-wise conv
+        use_aa = aa_layer is not None and stride > 1  # FIXME handle dilation
+
+        # Space to depth
+        if s2d == 1:
+            sd_chs = int(in_chs * 4)
+            self.conv_s2d = create_conv2d(in_chs, sd_chs, kernel_size=2, stride=2, padding='same')
+            self.bn_s2d = norm_act_layer(sd_chs, sd_chs)
+            dw_kernel_size = (dw_kernel_size + 1) // 2
+            dw_pad_type = 'same' if dw_kernel_size == 2 else pad_type
+            in_chs = sd_chs
+            use_aa = False  # disable AA
+        else:
+            self.conv_s2d = None
+            self.bn_s2d = None
+            dw_pad_type = pad_type
+
+        groups = num_groups(group_size, in_chs)
+        
+        if dw_pad_type == 'same':
+            padding = (dw_kernel_size - 1) // 2 * dilation
+        elif dw_pad_type == '':
+            padding = (dw_kernel_size - 1) // 2 * dilation
+        elif isinstance(dw_pad_type, int):
+            padding = dw_pad_type
+        else:
+            padding = (dw_kernel_size - 1) // 2 * dilation
+
+        self.conv_dw = Dynamic_conv2d(
+            in_planes=in_chs, out_planes=in_chs, kernel_size=dw_kernel_size,
+            ratio=dynamic_ratio, stride=1 if use_aa else stride,
+            padding=padding, dilation=dilation, groups=groups, 
+            K=dynamic_K, temperature=dynamic_temperature)
+        self.bn1 = norm_act_layer(in_chs, inplace=True)
+        self.aa = create_aa(aa_layer, channels=out_chs, stride=stride, enable=use_aa)
+
+        # Squeeze-and-excitation
+        self.se = se_layer(in_chs, act_layer=act_layer) if se_layer else nn.Identity()
+
+        self.conv_pw = create_conv2d(in_chs, out_chs, pw_kernel_size, padding=pad_type)
+        self.bn2 = norm_act_layer(out_chs, inplace=True, apply_act=self.has_pw_act)
+        self.drop_path = DropPath(drop_path_rate) if drop_path_rate else nn.Identity()
+
+    def feature_info(self, location):
+        if location == 'expansion':  # after SE, input to PW
+            return dict(module='conv_pw', hook_type='forward_pre', num_chs=self.conv_pw.in_channels)
+        else:  # location == 'bottleneck', block output
+            return dict(module='', num_chs=self.conv_pw.out_channels)
+
+    def forward(self, x):
+        shortcut = x
+        if self.conv_s2d is not None:
+            x = self.conv_s2d(x)
+            x = self.bn_s2d(x)
+        x = self.conv_dw(x)
+        x = self.bn1(x)
+        x = self.aa(x)
+        x = self.se(x)
+        x = self.conv_pw(x)
+        x = self.bn2(x)
+        if self.has_skip:
+            x = self.drop_path(x) + shortcut
+        return x
+
+    def update_temperature(self):
+        if hasattr(self.conv_dw, 'update_temperature'):
+            self.conv_dw.update_temperature()
+
+
+class attention2d(nn.Module):
+    def __init__(self, in_planes, ratios, K, temperature, init_weight=True):
+        super(attention2d, self).__init__()
+        assert temperature%3==1
+        self.avgpool = nn.AdaptiveAvgPool2d(1)
+        if in_planes!=3:
+            hidden_planes = int(in_planes*ratios)+1
+        else:
+            hidden_planes = K
+        self.fc1 = nn.Conv2d(in_planes, hidden_planes, 1, bias=False)
+        # self.bn = nn.BatchNorm2d(hidden_planes)
+        self.fc2 = nn.Conv2d(hidden_planes, K, 1, bias=True)
+        self.temperature = temperature
+        if init_weight:
+            self._initialize_weights()
+
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            if isinstance(m ,nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+    def updata_temperature(self):
+        # temperature annealing strategy, decrease temperature by 3 every time this function is called, until it reaches 1
+        # in the paper, Temperature annealing refers to reducing τ from 30 to 1 linearly in the first 10 epochs to speed up the convergence of the routing weights. After 10 epochs, τ is fixed to 1 for the rest of training.
+        if self.temperature!=1:
+            self.temperature -=3
+            print('Change temperature to:', str(self.temperature))
+
+
+    def forward(self, x):
+        x = self.avgpool(x)
+        x = self.fc1(x)
+        x = F.relu(x)
+        x = self.fc2(x).view(x.size(0), -1)
+        # pi_k(x) is returned here with softmax and temperature, where pi_k(x) is the weight for the k-th kernel
+        return F.softmax(x/self.temperature, 1)
+
+
+class Dynamic_conv2d(nn.Module):
+    """
+    https://zhuanlan.zhihu.com/p/208519425
+    when training dynamic conv with batch_size > 1, there will be a problem: because the weights of dynamic conv are generated dynamically based on the input, each sample will have different weights, which makes it impossible to directly use standard convolution operations in the batch, because convolution operations require fixed weights.
+    1. standard conv input with batch_size: [batch_size, in_channels, W, H]
+    2. change view so input size become: [1, batch_size * in_channels, W, H]
+    3. perform group convolution where groups = batch_size: [1, batch_size * out_channels, W', H']
+    4. change view back to: [batch_size, out_channels, W', H']
+    """
+    def __init__(self, in_planes, out_planes, kernel_size, ratio=0.25, stride=1, padding=0, dilation=1, groups=1, bias=True, K=4,temperature=34, init_weight=True):
+        super(Dynamic_conv2d, self).__init__()
+        assert in_planes%groups==0
+        self.in_planes = in_planes
+        self.out_planes = out_planes
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.padding = padding
+        self.dilation = dilation
+        self.groups = groups
+        self.bias = bias
+        self.K = K
+        self.attention = attention2d(in_planes, ratio, K, temperature)
+
+        self.weight = nn.Parameter(torch.randn(K, out_planes, in_planes//groups, kernel_size, kernel_size), requires_grad=True)
+        if bias:
+            self.bias = nn.Parameter(torch.zeros(K, out_planes))
+        else:
+            self.bias = None
+        if init_weight:
+            self._initialize_weights()
+            
+    def _initialize_weights(self):
+        for i in range(self.K):
+            nn.init.kaiming_uniform_(self.weight[i])
+
+
+    def update_temperature(self):
+        self.attention.updata_temperature()
+
+    def forward(self, x):
+        softmax_attention = self.attention(x)
+        batch_size, in_planes, height, width = x.size()
+        x = x.view(1, -1, height, width)
+        weight = self.weight.view(self.K, -1)
+
+        # aggregate weight and bias using the attention weights
+        aggregate_weight = torch.mm(softmax_attention, weight).view(batch_size*self.out_planes, self.in_planes//self.groups, self.kernel_size, self.kernel_size)
+
+        # perform convolution with the aggregated weight and bias
+        if self.bias is not None:
+            aggregate_bias = torch.mm(softmax_attention, self.bias).view(-1)
+            output = F.conv2d(x, weight=aggregate_weight, bias=aggregate_bias, stride=self.stride, padding=self.padding,
+                              dilation=self.dilation, groups=self.groups*batch_size)
+        else:
+            output = F.conv2d(x, weight=aggregate_weight, bias=None, stride=self.stride, padding=self.padding,
+                              dilation=self.dilation, groups=self.groups * batch_size)
+
+        output = output.view(batch_size, self.out_planes, output.size(-2), output.size(-1))
+        return output
 
 
 class InvertedResidual(nn.Module):
@@ -450,6 +653,232 @@ class UniversalInvertedResidual(nn.Module):
         x = self.layer_scale(x)
         if self.has_skip:
             x = self.drop_path(x) + shortcut
+        return x
+
+
+class MultiQueryAttention2d(nn.Module):
+    """Multi Query Attention with spatial downsampling.
+
+     3 parameters are introduced for the spatial downsampling:
+     1. kv_stride: downsampling factor on Key and Values only.
+     2. query_strides: horizontal & vertical strides on Query only.
+
+    This is an optimized version.
+    1. Projections in Attention is explicit written out as 1x1 Conv2D.
+    2. Additional reshapes are introduced to bring a up to 3x speed up.
+    """
+    fused_attn: torch.jit.Final[bool]
+
+    def __init__(
+            self,
+            dim: int,
+            dim_out: Optional[int] = None,
+            num_heads: int = 8,
+            key_dim: Optional[int] = None,
+            value_dim: Optional[int] = None,
+            query_strides: int = 1,
+            kv_stride: int = 1,
+            dw_kernel_size: int = 3,
+            dilation: int = 1,
+            padding: Union[str, int, List[int]] = '',
+            attn_drop: float = 0.,
+            proj_drop: float = 0.,
+            norm_layer: Type[nn.Module] = nn.BatchNorm2d,
+            use_bias: bool = False,
+            device=None,
+            dtype=None,
+    ):
+        """Initializer.
+
+        Args:
+          num_heads: Number of attention heads.
+          key_dim: Size of the attention key dimension.
+          value_dim: Size of the attention value dimension.
+          query_strides: Vertical stride size for query only.
+          kv_stride: Key and value stride size.
+          dw_kernel_size: Spatial dimension of the depthwise kernel.
+        """
+        dd = {'device': device, 'dtype': dtype}
+        super().__init__()
+        dim_out = dim_out or dim
+        self.num_heads = num_heads
+        self.key_dim = key_dim or dim // num_heads
+        self.value_dim = value_dim or dim // num_heads
+        self.query_strides = to_2tuple(query_strides)
+        self.kv_stride = kv_stride
+        self.has_query_strides = any([s > 1 for s in self.query_strides])
+        self.scale = self.key_dim ** -0.5
+        self.fused_attn = use_fused_attn()
+        self.drop = attn_drop
+
+        self.query = nn.Sequential()
+        if self.has_query_strides:
+            # FIXME dilation
+            if padding == 'same':
+                self.query.add_module('down_pool', create_pool2d(
+                    'avg',
+                    kernel_size=self.query_strides,
+                    padding='same',
+                ))
+            else:
+                # no pad if not 'same' as kern=stride=even
+                self.query.add_module('down_pool', nn.AvgPool2d(kernel_size=query_strides))
+            self.query.add_module('norm', norm_layer(dim, **dd))
+        self.query.add_module('proj', create_conv2d(
+            dim,
+            self.num_heads * self.key_dim,
+            kernel_size=1,
+            bias=use_bias,
+            **dd,
+        ))
+
+        self.key = nn.Sequential()
+        if kv_stride > 1:
+            self.key.add_module('down_conv', create_conv2d(
+                dim,
+                dim,
+                kernel_size=dw_kernel_size,
+                stride=kv_stride,
+                dilation=dilation,
+                padding=padding,
+                depthwise=True,
+                **dd,
+            ))
+            self.key.add_module('norm', norm_layer(dim, **dd))
+        self.key.add_module('proj', create_conv2d(
+            dim,
+            self.key_dim,
+            kernel_size=1,
+            padding=padding,
+            bias=use_bias,
+            **dd,
+        ))
+
+        self.value = nn.Sequential()
+        if kv_stride > 1:
+            self.value.add_module('down_conv', create_conv2d(
+                dim,
+                dim,
+                kernel_size=dw_kernel_size,
+                stride=kv_stride,
+                dilation=dilation,
+                padding=padding,
+                depthwise=True,
+                **dd,
+            ))
+            self.value.add_module('norm', norm_layer(dim, **dd))
+        self.value.add_module('proj', create_conv2d(
+            dim,
+            self.value_dim,
+            kernel_size=1,
+            bias=use_bias,
+            **dd,
+        ))
+
+        self.attn_drop = nn.Dropout(attn_drop)
+
+        self.output = nn.Sequential()
+        if self.has_query_strides:
+            self.output.add_module('upsample', nn.Upsample(
+                scale_factor=self.query_strides,
+                mode='bilinear',
+                align_corners=False
+            ))
+        self.output.add_module('proj', create_conv2d(
+            self.value_dim * self.num_heads,
+            dim_out,
+            kernel_size=1,
+            bias=use_bias,
+            **dd,
+        ))
+        self.output.add_module('drop', nn.Dropout(proj_drop))
+
+        self.einsum = False
+        self.init_weights()
+
+    def init_weights(self):
+        # using xavier appeared to improve stability for mobilenetv4 hybrid w/ this layer
+        nn.init.xavier_uniform_(self.query.proj.weight)
+        nn.init.xavier_uniform_(self.key.proj.weight)
+        nn.init.xavier_uniform_(self.value.proj.weight)
+        if self.kv_stride > 1:
+            nn.init.xavier_uniform_(self.key.down_conv.weight)
+            nn.init.xavier_uniform_(self.value.down_conv.weight)
+        nn.init.xavier_uniform_(self.output.proj.weight)
+
+    def _reshape_input(self, t: torch.Tensor):
+        """Reshapes a tensor to three dimensions, keeping the batch and channels."""
+        s = t.shape
+        t = t.reshape(s[0], s[1], -1).transpose(1, 2)
+        if self.einsum:
+            return t
+        else:
+            return t.unsqueeze(1).contiguous()
+
+    def _reshape_projected_query(self, t: torch.Tensor, num_heads: int, key_dim: int):
+        """Reshapes projected query: [b, n, n, h x k] -> [b, n x n, h, k]."""
+        s = t.shape
+        t = t.reshape(s[0], num_heads, key_dim, -1)
+        if self.einsum:
+            return t.permute(0, 3, 1, 2).contiguous()
+        else:
+            return t.transpose(-1, -2).contiguous()
+
+    def _reshape_output(self, t: torch.Tensor, num_heads: int, h_px: int, w_px: int):
+        """Reshape output:[b, n x n x h, k] -> [b, n, n, hk]."""
+        s = t.shape
+        feat_dim = s[-1] * num_heads
+        if not self.einsum:
+            t = t.transpose(1, 2)
+        return t.reshape(s[0], h_px, w_px, feat_dim).permute(0, 3, 1, 2).contiguous()
+
+    def forward(self, x, attn_mask: Optional[torch.Tensor] = None):
+        """Run layer computation."""
+        B, C, H, W = s = x.shape
+
+        q = self.query(x)
+        # desired q shape: [b, h, k, n x n] - [b, l, h, k]
+        q = self._reshape_projected_query(q, self.num_heads, self.key_dim)
+
+        k = self.key(x)
+        # output shape of k: [b, k, p], p = m x m
+        k = self._reshape_input(k)
+
+        v = self.value(x)
+        # output shape of v: [ b, p, k], p = m x m
+        v = self._reshape_input(v)
+
+        # desired q shape: [b, n x n, h, k]
+        # desired k shape: [b, m x m, k]
+        # desired logits shape: [b, n x n, h, m x m]
+        if self.einsum:
+            attn = torch.einsum('blhk,bpk->blhp', q, k) * self.scale
+            if attn_mask is not None:
+                # NOTE: assumes mask is float and in correct shape
+                attn = attn + attn_mask
+            attn = attn.softmax(dim=-1)
+            attn = self.attn_drop(attn)
+            o = torch.einsum('blhp,bpk->blhk', attn, v)
+        else:
+            if self.fused_attn:
+                o = F.scaled_dot_product_attention(
+                    q, k, v,
+                    attn_mask=attn_mask,
+                    dropout_p=self.attn_drop.p if self.training else 0.
+                )
+            else:
+                q = q * self.scale
+                attn = q @ k.transpose(-1, -2)
+                if attn_mask is not None:
+                    # NOTE: assumes mask is float and in correct shape
+                    attn = attn + attn_mask
+                attn = attn.softmax(dim=-1)
+                attn = self.attn_drop(attn)
+                o = attn @ v
+
+        # reshape o into [b, hk, n, n,]
+        o = self._reshape_output(o, self.num_heads, H // self.query_strides[0], W // self.query_strides[1])
+        x = self.output(o)
         return x
 
 
