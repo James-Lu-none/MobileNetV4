@@ -9,8 +9,10 @@ from timm.layers import create_conv2d, DropPath, create_act_layer, create_aa, to
 from timm.layers import use_fused_attn, to_2tuple
 
 __all__ = [
-    'SqueezeExcite', 'ConvBnAct', 'DepthwiseSeparableConv', 'DynamicDepthwiseSeparableConv', 'InvertedResidual', 'CondConvResidual', 'EdgeResidual',
-    'UniversalInvertedResidual', 'MobileAttention'
+    'SqueezeExcite', 'ConvBnAct', 'DepthwiseSeparableConv',
+    'InvertedResidual', 'CondConvResidual', 'EdgeResidual',
+    'UniversalInvertedResidual', 'MobileAttention',
+    'DynamicUniversalInvertedResidual'
 ]
 
 ModuleType = Type[nn.Module]
@@ -202,105 +204,6 @@ class DepthwiseSeparableConv(nn.Module):
         if self.has_skip:
             x = self.drop_path(x) + shortcut
         return x
-
-
-class DynamicDepthwiseSeparableConv(nn.Module):
-    """ Dynamic Depthwise-separable block
-    Used for DS convs in MobileNet-V1 and in the place of IR blocks that have no expansion
-    (factor of 1.0). This is an alternative to having a IR with an optional first pw conv.
-    """
-    def __init__(
-            self,
-            in_chs: int,
-            out_chs: int,
-            dw_kernel_size: int = 3,
-            stride: int = 1,
-            dilation: int = 1,
-            group_size: int = 1,
-            pad_type: str = '',
-            noskip: bool = False,
-            pw_kernel_size: int = 1,
-            pw_act: bool = False,
-            s2d: int = 0,
-            act_layer: LayerType = nn.ReLU,
-            norm_layer: LayerType = nn.BatchNorm2d,
-            aa_layer: Optional[LayerType] = None,
-            se_layer: Optional[ModuleType] = None,
-            drop_path_rate: float = 0.,
-            dynamic_K: int = 4,
-            dynamic_temperature: int = 34,
-            dynamic_ratio: float = 0.25,
-    ):
-        super(DynamicDepthwiseSeparableConv, self).__init__()
-        norm_act_layer = get_norm_act_layer(norm_layer, act_layer)
-        self.has_skip = (stride == 1 and in_chs == out_chs) and not noskip
-        self.has_pw_act = pw_act  # activation after point-wise conv
-        use_aa = aa_layer is not None and stride > 1  # FIXME handle dilation
-
-        # Space to depth
-        if s2d == 1:
-            sd_chs = int(in_chs * 4)
-            self.conv_s2d = create_conv2d(in_chs, sd_chs, kernel_size=2, stride=2, padding='same')
-            self.bn_s2d = norm_act_layer(sd_chs, sd_chs)
-            dw_kernel_size = (dw_kernel_size + 1) // 2
-            dw_pad_type = 'same' if dw_kernel_size == 2 else pad_type
-            in_chs = sd_chs
-            use_aa = False  # disable AA
-        else:
-            self.conv_s2d = None
-            self.bn_s2d = None
-            dw_pad_type = pad_type
-
-        groups = num_groups(group_size, in_chs)
-        
-        if dw_pad_type == 'same':
-            padding = (dw_kernel_size - 1) // 2 * dilation
-        elif dw_pad_type == '':
-            padding = (dw_kernel_size - 1) // 2 * dilation
-        elif isinstance(dw_pad_type, int):
-            padding = dw_pad_type
-        else:
-            padding = (dw_kernel_size - 1) // 2 * dilation
-
-        self.conv_dw = Dynamic_conv2d(
-            in_planes=in_chs, out_planes=in_chs, kernel_size=dw_kernel_size,
-            ratio=dynamic_ratio, stride=1 if use_aa else stride,
-            padding=padding, dilation=dilation, groups=groups, 
-            K=dynamic_K, temperature=dynamic_temperature)
-        self.bn1 = norm_act_layer(in_chs, inplace=True)
-        self.aa = create_aa(aa_layer, channels=out_chs, stride=stride, enable=use_aa)
-
-        # Squeeze-and-excitation
-        self.se = se_layer(in_chs, act_layer=act_layer) if se_layer else nn.Identity()
-
-        self.conv_pw = create_conv2d(in_chs, out_chs, pw_kernel_size, padding=pad_type)
-        self.bn2 = norm_act_layer(out_chs, inplace=True, apply_act=self.has_pw_act)
-        self.drop_path = DropPath(drop_path_rate) if drop_path_rate else nn.Identity()
-
-    def feature_info(self, location):
-        if location == 'expansion':  # after SE, input to PW
-            return dict(module='conv_pw', hook_type='forward_pre', num_chs=self.conv_pw.in_channels)
-        else:  # location == 'bottleneck', block output
-            return dict(module='', num_chs=self.conv_pw.out_channels)
-
-    def forward(self, x):
-        shortcut = x
-        if self.conv_s2d is not None:
-            x = self.conv_s2d(x)
-            x = self.bn_s2d(x)
-        x = self.conv_dw(x)
-        x = self.bn1(x)
-        x = self.aa(x)
-        x = self.se(x)
-        x = self.conv_pw(x)
-        x = self.bn2(x)
-        if self.has_skip:
-            x = self.drop_path(x) + shortcut
-        return x
-
-    def update_temperature(self):
-        if hasattr(self.conv_dw, 'update_temperature'):
-            self.conv_dw.update_temperature()
 
 
 class attention2d(nn.Module):
@@ -655,6 +558,127 @@ class UniversalInvertedResidual(nn.Module):
             x = self.drop_path(x) + shortcut
         return x
 
+
+class DynamicUniversalInvertedResidual(nn.Module):
+    """ Dynamic Universal Inverted Residual Block (aka Dynamic Universal Inverted Bottleneck, DUIB)
+    """
+
+    def __init__(
+            self,
+            in_chs: int,
+            out_chs: int,
+            dw_kernel_size_start: int = 0,
+            dw_kernel_size_mid: int = 3,
+            dw_kernel_size_end: int = 0,
+            stride: int = 1,
+            dilation: int = 1,
+            group_size: int = 1,
+            pad_type: str = '',
+            noskip: bool = False,
+            exp_ratio: float = 1.0,
+            act_layer: LayerType = nn.ReLU,
+            norm_layer: LayerType = nn.BatchNorm2d,
+            aa_layer: Optional[LayerType] = None,
+            se_layer: Optional[ModuleType] = None,
+            conv_kwargs: Optional[Dict] = None,
+            drop_path_rate: float = 0.,
+            layer_scale_init_value: Optional[float] = 1e-5,
+            dynamic_K: int = 4,
+            dynamic_temperature: int = 34,
+            dynamic_ratio: float = 0.25,
+    ):
+        super(DynamicUniversalInvertedResidual, self).__init__()
+        conv_kwargs = conv_kwargs or {}
+        self.has_skip = (in_chs == out_chs and stride == 1) and not noskip
+        if stride > 1:
+            assert dw_kernel_size_start or dw_kernel_size_mid or dw_kernel_size_end
+
+        norm_act_layer = get_norm_act_layer(norm_layer, act_layer)
+        norm_layer_no_act = get_norm_act_layer(norm_layer, None)
+
+        def make_dynamic_conv_norm_act(in_c, out_c, k_size, stride_c, groups_c, use_act=True, apply_aa=False):
+            if pad_type == 'same':
+                padding = (k_size - 1) // 2 * dilation
+            elif pad_type == '':
+                padding = (k_size - 1) // 2 * dilation
+            elif isinstance(pad_type, int):
+                padding = pad_type
+            else:
+                padding = (k_size - 1) // 2 * dilation
+                
+            conv = Dynamic_conv2d(
+                in_planes=in_c, out_planes=out_c, kernel_size=k_size,
+                ratio=dynamic_ratio, stride=1 if apply_aa and stride_c > 1 else stride_c, padding=padding,
+                dilation=dilation, groups=groups_c, bias=False, K=dynamic_K, temperature=dynamic_temperature
+            )
+            norm = norm_act_layer(out_c, inplace=True) if use_act else norm_layer_no_act(out_c)
+            if apply_aa and stride_c > 1:
+                aa = create_aa(aa_layer, channels=out_c, stride=stride_c, enable=True)
+                return nn.Sequential(conv, norm, aa)
+            else:
+                return nn.Sequential(conv, norm)
+
+        if dw_kernel_size_start:
+            dw_start_stride = stride if not dw_kernel_size_mid else 1
+            dw_start_groups = num_groups(group_size, in_chs)
+            self.dw_start = make_dynamic_conv_norm_act(in_chs, in_chs, dw_kernel_size_start, dw_start_stride, dw_start_groups, use_act=False, apply_aa=True)
+        else:
+            self.dw_start = nn.Identity()
+
+        mid_chs = make_divisible(in_chs * exp_ratio)
+        if mid_chs != in_chs:
+            self.pw_exp = make_dynamic_conv_norm_act(in_chs, mid_chs, 1, 1, 1, use_act=True, apply_aa=False)
+        else:
+            self.pw_exp = nn.Identity()
+
+        if dw_kernel_size_mid:
+            groups = num_groups(group_size, mid_chs)
+            self.dw_mid = make_dynamic_conv_norm_act(mid_chs, mid_chs, dw_kernel_size_mid, stride, groups, use_act=True, apply_aa=True)
+        else:
+            self.dw_mid = nn.Identity()
+
+        self.se = se_layer(mid_chs, act_layer=act_layer) if se_layer else nn.Identity()
+
+        self.pw_proj = make_dynamic_conv_norm_act(mid_chs, out_chs, 1, 1, 1, use_act=False, apply_aa=False)
+
+        if dw_kernel_size_end:
+            dw_end_stride = stride if not dw_kernel_size_start and not dw_kernel_size_mid else 1
+            dw_end_groups = num_groups(group_size, out_chs)
+            if dw_end_stride > 1:
+                assert not aa_layer
+            self.dw_end = make_dynamic_conv_norm_act(out_chs, out_chs, dw_kernel_size_end, dw_end_stride, dw_end_groups, use_act=False, apply_aa=False)
+        else:
+            self.dw_end = nn.Identity()
+
+        if layer_scale_init_value is not None:
+            self.layer_scale = LayerScale2d(out_chs, layer_scale_init_value)
+        else:
+            self.layer_scale = nn.Identity()
+        self.drop_path = DropPath(drop_path_rate) if drop_path_rate else nn.Identity()
+
+    def feature_info(self, location):
+        if location == 'expansion':
+            return dict(module='pw_proj.0', hook_type='forward_pre', num_chs=self.pw_proj[0].in_planes)
+        else:
+            return dict(module='', num_chs=self.pw_proj[0].out_planes)
+
+    def forward(self, x):
+        shortcut = x
+        x = self.dw_start(x)
+        x = self.pw_exp(x)
+        x = self.dw_mid(x)
+        x = self.se(x)
+        x = self.pw_proj(x)
+        x = self.dw_end(x)
+        x = self.layer_scale(x)
+        if self.has_skip:
+            x = self.drop_path(x) + shortcut
+        return x
+
+    def update_temperature(self):
+        for m in self.modules():
+            if isinstance(m, Dynamic_conv2d):
+                m.update_temperature()
 
 class MultiQueryAttention2d(nn.Module):
     """Multi Query Attention with spatial downsampling.
