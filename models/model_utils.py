@@ -99,7 +99,13 @@ def _decode_block_str(block_str):
     is assumed to indicate the block type.
 
     leading string - block type (
-      ir = InvertedResidual, ds = DepthwiseSep, dsa = DeptwhiseSep with pw act, cn = ConvBnAct)
+      ir = InvertedResidual, 
+      ds = DepthwiseSeparableConv,
+      dsa = DeptwhiseSeparableConv with activation after pw conv,
+      cn = Conv2d + Norm + Act,
+      dds = DynamicDepthwiseSeparableConv,
+      ddsa = DynamicDepthwiseSeparableConv with activation after pw conv
+    )
     r - number of repeat blocks,
     k - kernel size,
     s - strides (1-9),
@@ -176,15 +182,22 @@ def _decode_block_str(block_str):
         ))
         if 'cc' in options:
             block_args['num_experts'] = int(options['cc'])
-    elif block_type == 'ds' or block_type == 'dsa':
+    elif block_type == 'ds' or block_type == 'dsa' or block_type == 'dds' or block_type == 'ddsa':
         block_args.update(dict(
             dw_kernel_size=_parse_ksize(options['k']),
             pw_kernel_size=end_kernel_size,
             se_ratio=float(options.get('se', 0.)),
-            pw_act=block_type == 'dsa',
-            noskip=block_type == 'dsa' or skip is False,
+            pw_act=block_type in ('dsa', 'ddsa'),
+            noskip=block_type in ('dsa', 'ddsa') or skip is False,
             s2d=int(options.get('d', 0)) > 0,
         ))
+        if block_type in ('dds', 'ddsa'):
+            if 'dk' in options:
+                block_args['dynamic_K'] = int(options['dk'])
+            if 'dt' in options:
+                block_args['dynamic_temperature'] = int(options['dt'])
+            if 'dr' in options:
+                block_args['dynamic_ratio'] = float(options['dr'])
     elif block_type == 'er':
         block_args.update(dict(
             exp_kernel_size=_parse_ksize(options['k']),
@@ -415,6 +428,9 @@ class EfficientNetBuilder:
         elif bt == 'ds' or bt == 'dsa':
             _log_info_if('  DepthwiseSeparable {}, Args: {}'.format(block_idx, str(ba)), self.verbose)
             block = DepthwiseSeparableConv(**ba)
+        elif bt == 'dds' or bt == 'ddsa':
+            _log_info_if('  DynamicDepthwiseSeparable {}, Args: {}'.format(block_idx, str(ba)), self.verbose)
+            block = DynamicDepthwiseSeparableConv(**ba)
         elif bt == 'er':
             _log_info_if('  EdgeResidual {}, Args: {}'.format(block_idx, str(ba)), self.verbose)
             block = EdgeResidual(**ba)
