@@ -6,6 +6,15 @@ import matplotlib.pyplot as plt
 
 
 def read_split_data(root, plot_image=False):
+    cache_path = os.path.join(root, 'split_cache.json')
+    if os.path.exists(cache_path):
+        print(f"Loading split data from cache {cache_path}")
+        with open(cache_path, 'r') as f:
+            cache_data = json.load(f)
+            return cache_data['train_image_path'], cache_data['train_image_label'], \
+                   cache_data['val_image_path'], cache_data['val_image_label'], \
+                   cache_data['class_indices']
+
     filepaths = []
     labels = []
     bad_images = []
@@ -93,5 +102,17 @@ def read_split_data(root, plot_image=False):
 
         plt.title('class distribution')
         plt.show()
+
+    # Save to cache
+    cache_data = {
+        'train_image_path': train_image_path,
+        'train_image_label': train_image_label,
+        'val_image_path': val_image_path,
+        'val_image_label': val_image_label,
+        'class_indices': class_indices
+    }
+    with open(cache_path, 'w') as f:
+        json.dump(cache_data, f)
+    print(f"Saved split data to cache {cache_path}")
 
     return train_image_path, train_image_label, val_image_path, val_image_label, class_indices

@@ -275,6 +275,7 @@ def main(args):
         num_workers=args.num_workers,
         pin_memory=args.pin_mem,
         drop_last=True,
+        persistent_workers=args.num_workers > 0
     )
 
     if args.ThreeAugment:
@@ -285,7 +286,8 @@ def main(args):
         batch_size=int(1.5 * args.batch_size),
         num_workers=args.num_workers,
         pin_memory=args.pin_mem,
-        drop_last=False
+        drop_last=False,
+        persistent_workers=args.num_workers > 0
     )
 
     mixup_fn = None
