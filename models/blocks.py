@@ -232,6 +232,8 @@ class attention2d(nn.Module):
                 nn.init.constant_(m.bias, 0)
 
     def updata_temperature(self):
+        # temperature annealing strategy, decrease temperature by 3 every time this function is called, until it reaches 1
+        # in the paper, Temperature annealing refers to reducing τ from 30 to 1 linearly in the first 10 epochs to speed up the convergence of the routing weights. After 10 epochs, τ is fixed to 1 for the rest of training.
         if self.temperature!=1:
             self.temperature -=3
             print('Change temperature to:', str(self.temperature))
@@ -242,6 +244,7 @@ class attention2d(nn.Module):
         x = self.fc1(x)
         x = F.relu(x)
         x = self.fc2(x).view(x.size(0), -1)
+        # pi_k(x) is returned here with softmax and temperature, where pi_k(x) is the weight for the k-th kernel
         return F.softmax(x/self.temperature, 1)
 
 
@@ -282,7 +285,10 @@ class Dynamic_conv2d(nn.Module):
         x = x.view(1, -1, height, width)
         weight = self.weight.view(self.K, -1)
 
+        # aggregate weight and bias using the attention weights
         aggregate_weight = torch.mm(softmax_attention, weight).view(batch_size*self.out_planes, self.in_planes//self.groups, self.kernel_size, self.kernel_size)
+
+        # perform convolution with the aggregated weight and bias
         if self.bias is not None:
             aggregate_bias = torch.mm(softmax_attention, self.bias).view(-1)
             output = F.conv2d(x, weight=aggregate_weight, bias=aggregate_bias, stride=self.stride, padding=self.padding,
