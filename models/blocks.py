@@ -249,6 +249,14 @@ class attention2d(nn.Module):
 
 
 class Dynamic_conv2d(nn.Module):
+    """
+    https://zhuanlan.zhihu.com/p/208519425
+    when training dynamic conv with batch_size > 1, there will be a problem: because the weights of dynamic conv are generated dynamically based on the input, each sample will have different weights, which makes it impossible to directly use standard convolution operations in the batch, because convolution operations require fixed weights.
+    1. standard conv input with batch_size: [batch_size, in_channels, W, H]
+    2. change view so input size become: [1, batch_size * in_channels, W, H]
+    3. perform group convolution where groups = batch_size: [1, batch_size * out_channels, W', H']
+    4. change view back to: [batch_size, out_channels, W', H']
+    """
     def __init__(self, in_planes, out_planes, kernel_size, ratio=0.25, stride=1, padding=0, dilation=1, groups=1, bias=True, K=4,temperature=34, init_weight=True):
         super(Dynamic_conv2d, self).__init__()
         assert in_planes%groups==0
