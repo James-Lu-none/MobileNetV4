@@ -943,6 +943,40 @@ def mobilenetv4_hybrid_large_075(pretrained=False, pretrained_cfg=None, pretrain
     return model
 
 
+@register_model
+def mobilenetv4_dynamic_conv_small(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs) -> MobileNetV4:
+    """ MobileNet V4 Dynamic """
+    model = _gen_mobilenet_v4('mobilenetv4_dynamic_conv_small', 1.0, pretrained=pretrained, **kwargs)
+    return model
+
+
+@register_model
+def mobilenetv4_dynamic_conv_medium(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs) -> MobileNetV4:
+    """ MobileNet V4 Dynamic """
+    model = _gen_mobilenet_v4('mobilenetv4_dynamic_conv_medium', 1.0, pretrained=pretrained, **kwargs)
+    return model
+
+
+@register_model
+def mobilenetv4_dynamic_conv_large(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs) -> MobileNetV4:
+    """ MobileNet V4 Dynamic """
+    model = _gen_mobilenet_v4('mobilenetv4_dynamic_conv_large', 1.0, pretrained=pretrained, **kwargs)
+    return model
+
+
+@register_model
+def mobilenetv4_dynamic_hybrid_medium(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs) -> MobileNetV4:
+    """ MobileNet V4 Dynamic Hybrid """
+    model = _gen_mobilenet_v4('mobilenetv4_dynamic_hybrid_medium', 1.0, pretrained=pretrained, **kwargs)
+    return model
+
+
+@register_model
+def mobilenetv4_dynamic_hybrid_large(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs) -> MobileNetV4:
+    """ MobileNet V4 Dynamic Hybrid"""
+    model = _gen_mobilenet_v4('mobilenetv4_dynamic_hybrid_large', 1.0, pretrained=pretrained, **kwargs)
+    return model
+
 # if __name__ == '__main__':
 #     from torchinfo import summary
 #     from safetensors.torch import load_file
