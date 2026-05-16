@@ -102,9 +102,12 @@ def _decode_block_str(block_str):
       ir = InvertedResidual, 
       ds = DepthwiseSeparableConv,
       dsa = DeptwhiseSeparableConv with activation after pw conv,
+      er = EdgeResidual,
       cn = Conv2d + Norm + Act,
-      dds = DynamicDepthwiseSeparableConv,
-      ddsa = DynamicDepthwiseSeparableConv with activation after pw conv
+      uir = UniversalInvertedResidual,
+      duir = DynamicUniversalInvertedResidual,
+      mqa = MobileMultiQueryAttention,
+      mha = MobileMultiHeadAttention,
     )
     r - number of repeat blocks,
     k - kernel size,
@@ -182,22 +185,16 @@ def _decode_block_str(block_str):
         ))
         if 'cc' in options:
             block_args['num_experts'] = int(options['cc'])
-    elif block_type == 'ds' or block_type == 'dsa' or block_type == 'dds' or block_type == 'ddsa':
+    elif block_type == 'ds' or block_type == 'dsa':
         block_args.update(dict(
+            exp_kernel_size=start_kernel_size,
             dw_kernel_size=_parse_ksize(options['k']),
             pw_kernel_size=end_kernel_size,
             se_ratio=float(options.get('se', 0.)),
-            pw_act=block_type in ('dsa', 'ddsa'),
-            noskip=block_type in ('dsa', 'ddsa') or skip is False,
+            pw_act=block_type == 'dsa',
+            noskip=block_type == 'dsa' or skip is False,
             s2d=int(options.get('d', 0)) > 0,
         ))
-        if block_type in ('dds', 'ddsa'):
-            if 'dk' in options:
-                block_args['dynamic_K'] = int(options['dk'])
-            if 'dt' in options:
-                block_args['dynamic_temperature'] = int(options['dt'])
-            if 'dr' in options:
-                block_args['dynamic_ratio'] = float(options['dr'])
     elif block_type == 'er':
         block_args.update(dict(
             exp_kernel_size=_parse_ksize(options['k']),
@@ -212,7 +209,7 @@ def _decode_block_str(block_str):
             kernel_size=int(options['k']),
             skip=skip is True,
         ))
-    elif block_type == 'uir':
+    elif block_type == 'uir' or block_type == 'duir':
         # override exp / proj kernels for start/end in uir block
         start_kernel_size = _parse_ksize(options['a']) if 'a' in options else 0
         end_kernel_size = _parse_ksize(options['p']) if 'p' in options else 0
@@ -224,6 +221,13 @@ def _decode_block_str(block_str):
             se_ratio=float(options.get('se', 0.)),
             noskip=skip is False,
         ))
+        if block_type == 'duir':
+            if 'dk' in options:
+                block_args['dynamic_K'] = int(options['dk'])
+            if 'dt' in options:
+                block_args['dynamic_temperature'] = int(options['dt'])
+            if 'dr' in options:
+                block_args['dynamic_ratio'] = float(options['dr'])
     elif block_type == 'mha':
         kv_dim = int(options['d'])
         block_args.update(dict(
@@ -428,9 +432,6 @@ class EfficientNetBuilder:
         elif bt == 'ds' or bt == 'dsa':
             _log_info_if('  DepthwiseSeparable {}, Args: {}'.format(block_idx, str(ba)), self.verbose)
             block = DepthwiseSeparableConv(**ba)
-        elif bt == 'dds' or bt == 'ddsa':
-            _log_info_if('  DynamicDepthwiseSeparable {}, Args: {}'.format(block_idx, str(ba)), self.verbose)
-            block = DynamicDepthwiseSeparableConv(**ba)
         elif bt == 'er':
             _log_info_if('  EdgeResidual {}, Args: {}'.format(block_idx, str(ba)), self.verbose)
             block = EdgeResidual(**ba)
@@ -440,6 +441,9 @@ class EfficientNetBuilder:
         elif bt == 'uir':
             _log_info_if('  UniversalInvertedResidual {}, Args: {}'.format(block_idx, str(ba)), self.verbose)
             block = UniversalInvertedResidual(**ba, layer_scale_init_value=self.layer_scale_init_value)
+        elif bt == 'duir':
+            _log_info_if('  DynamicUniversalInvertedResidual {}, Args: {}'.format(block_idx, str(ba)), self.verbose)
+            block = DynamicUniversalInvertedResidual(**ba, layer_scale_init_value=self.layer_scale_init_value)
         elif bt == 'mqa':
             _log_info_if('  MobileMultiQueryAttention {}, Args: {}'.format(block_idx, str(ba)), self.verbose)
             block = MobileAttention(**ba, use_multi_query=True, layer_scale_init_value=self.layer_scale_init_value)
