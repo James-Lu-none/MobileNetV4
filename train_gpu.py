@@ -470,6 +470,11 @@ def main(args):
 
         lr_scheduler.step(epoch)
 
+        # Anneal temperature for dynamic convolutions
+        for m in model_without_ddp.modules():
+            if type(m).__name__ == 'Dynamic_conv2d':
+                m.update_temperature()
+
         test_stats = evaluate(data_loader_val, model, device, epoch, writer, args, visualization=True)
         print(
             f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
