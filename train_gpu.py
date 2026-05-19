@@ -53,7 +53,7 @@ def get_args_parser():
     parser = argparse.ArgumentParser(
         'MobileNetV4 training and evaluation script', add_help=False)
     parser.add_argument('--batch-size', default=16, type=int)
-    parser.add_argument('--epochs', default=400, type=int)
+    parser.add_argument('--epochs', default=300, type=int)
     parser.add_argument('--predict', default=True, type=bool, help='plot ROC curve and confusion matrix')
     parser.add_argument('--opt_auc', default=False, type=bool, help='Optimize AUC')
 
