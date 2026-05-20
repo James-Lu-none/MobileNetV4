@@ -454,6 +454,12 @@ def main(args):
     start_time = time.time()
 
     for epoch in range(args.start_epoch, args.epochs):
+        # ensure training and evaluation use the same temperature and support resume
+        current_temp = max(1, 34 - 3 * (epoch + args.start_epoch))
+        for m in model_without_ddp.modules():
+            if type(m).__name__ == 'attention2d':
+                m.temperature = current_temp
+                
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
 
@@ -469,11 +475,6 @@ def main(args):
         )
 
         lr_scheduler.step(epoch)
-
-        # Anneal temperature for dynamic convolutions
-        for m in model_without_ddp.modules():
-            if type(m).__name__ == 'Dynamic_conv2d':
-                m.update_temperature()
 
         test_stats = evaluate(data_loader_val, model, device, epoch, writer, args, visualization=True)
         print(
