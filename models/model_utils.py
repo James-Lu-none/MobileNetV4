@@ -228,6 +228,8 @@ def _decode_block_str(block_str):
                 block_args['dynamic_temperature'] = int(options['dt'])
             if 'dr' in options:
                 block_args['dynamic_ratio'] = float(options['dr'])
+            if 'dpw' in options:
+                block_args['dynamic_pw'] = bool(int(options['dpw']))
     elif block_type == 'mha':
         kv_dim = int(options['d'])
         block_args.update(dict(
