@@ -834,17 +834,17 @@ def _gen_dynamic_mobilenet_v4(
                 ],
                 # stage 2, 28x28 in
                 [
-                    'duir_r1_a5_k5_s2_e3_c96',  # ExtraDW
-                    'duir_r4_a0_k3_s1_e2_c96',  # IR
-                    'duir_r1_a3_k0_s1_e4_c96',  # ConvNeXt
+                    'duir_r1_a5_k5_s2_e3_c96_dpw0',  # ExtraDW
+                    'duir_r4_a0_k3_s1_e2_c96_dpw0',  # IR
+                    'duir_r1_a3_k0_s1_e4_c96_dpw0',  # ConvNeXt
                 ],
                 # stage 3, 14x14 in
                 [
-                    'duir_r1_a3_k3_s2_e6_c128',  # ExtraDW
-                    'duir_r1_a5_k5_s1_e4_c128',  # ExtraDW
-                    'duir_r1_a0_k5_s1_e4_c128',  # IR
-                    'duir_r1_a0_k5_s1_e3_c128',  # IR
-                    'duir_r2_a0_k3_s1_e4_c128',  # IR
+                    'duir_r1_a3_k3_s2_e6_c128_dpw0',  # ExtraDW
+                    'duir_r1_a5_k5_s1_e4_c128_dpw0',  # ExtraDW
+                    'duir_r1_a0_k5_s1_e4_c128_dpw0',  # IR
+                    'duir_r1_a0_k5_s1_e3_c128_dpw0',  # IR
+                    'duir_r2_a0_k3_s1_e4_c128_dpw0',  # IR
                 ],
                 # stage 4, 7x7 in
                 [
