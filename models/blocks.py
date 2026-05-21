@@ -224,14 +224,14 @@ class attention2d(nn.Module):
 
 
     def _initialize_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            if isinstance(m ,nn.BatchNorm2d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
+        # fc1 with Kaiming initialization since it is followed by ReLU
+        nn.init.kaiming_normal_(self.fc1.weight, mode='fan_in', nonlinearity='relu')
+        if self.fc1.bias is not None:
+            nn.init.constant_(self.fc1.bias, 0)
+        # fc2 with small standard deviation initialization since it is followed by softmax
+        nn.init.normal_(self.fc2.weight, std=0.01)
+        if self.fc2.bias is not None:
+            nn.init.constant_(self.fc2.bias, 0)
 
     def updata_temperature(self):
         # temperature annealing strategy, decrease temperature by 3 every time this function is called, until it reaches 1
@@ -282,8 +282,11 @@ class Dynamic_conv2d(nn.Module):
             self._initialize_weights()
             
     def _initialize_weights(self):
+        import math
         for i in range(self.K):
             nn.init.kaiming_uniform_(self.weight[i])
+            # times sqrt(k) to prevent variance collapse
+            self.weight[i].data.mul_(math.sqrt(self.K))
 
 
     def update_temperature(self):
