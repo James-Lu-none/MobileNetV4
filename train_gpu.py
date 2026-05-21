@@ -220,11 +220,119 @@ def get_args_parser():
     return parser
 
 
+def plot_learning_curves(log_path, output_dir):
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import json
+    import math
+
+    epochs = []
+    train_loss = []
+    test_loss = []
+    test_acc1 = []
+    test_acc5 = []
+    train_lr = []
+
+    if not os.path.exists(log_path):
+        return
+
+    with open(log_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+                epochs.append(entry.get('epoch', 0))
+                train_loss.append(entry.get('train_loss'))
+                test_loss.append(entry.get('test_loss'))
+                test_acc1.append(entry.get('test_acc1'))
+                test_acc5.append(entry.get('test_acc5'))
+                train_lr.append(entry.get('train_lr'))
+            except Exception:
+                continue
+
+    def sanitize(val_list):
+        res = []
+        for v in val_list:
+            if v is None:
+                res.append(float('nan'))
+            elif isinstance(v, float) and math.isnan(v):
+                res.append(float('nan'))
+            elif isinstance(v, str) and v.lower() == 'nan':
+                res.append(float('nan'))
+            else:
+                res.append(float(v))
+        return res
+
+    train_loss = sanitize(train_loss)
+    test_loss = sanitize(test_loss)
+    test_acc1 = sanitize(test_acc1)
+    test_acc5 = sanitize(test_acc5)
+    train_lr = sanitize(train_lr)
+
+    if not epochs:
+        return
+
+    fig, axs = plt.subplots(1, 3, figsize=(18, 5))
+    
+    # Plot 1: Loss
+    axs[0].plot(epochs, train_loss, label='Train Loss', color='royalblue', marker='o', markersize=4)
+    if not all(math.isnan(x) for x in test_loss):
+        axs[0].plot(epochs, test_loss, label='Test Loss', color='orange', marker='s', markersize=4)
+    axs[0].set_title('Loss Curve')
+    axs[0].set_xlabel('Epoch')
+    axs[0].set_ylabel('Loss')
+    axs[0].grid(True, linestyle='--', alpha=0.6)
+    axs[0].legend()
+
+    # Plot 2: Accuracy
+    axs[1].plot(epochs, test_acc1, label='Test Acc@1', color='forestgreen', marker='^', markersize=4)
+    axs[1].plot(epochs, test_acc5, label='Test Acc@5', color='crimson', marker='v', markersize=4)
+    axs[1].set_title('Validation Accuracy')
+    axs[1].set_xlabel('Epoch')
+    axs[1].set_ylabel('Accuracy (%)')
+    axs[1].grid(True, linestyle='--', alpha=0.6)
+    axs[1].legend()
+
+    # Plot 3: Learning Rate
+    axs[2].plot(epochs, train_lr, label='Learning Rate', color='purple', marker='d', markersize=4)
+    axs[2].set_title('Learning Rate Schedule')
+    axs[2].set_xlabel('Epoch')
+    axs[2].set_ylabel('LR')
+    axs[2].grid(True, linestyle='--', alpha=0.6)
+    axs[2].legend()
+
+    plt.tight_layout()
+    save_img_path = os.path.join(output_dir, 'learning_curves.png')
+    plt.savefig(save_img_path, dpi=150)
+    plt.close()
 
 
 def main(args):
     print(args)
     utils.init_distributed_mode(args)
+
+    if args.output_dir:
+        # Generate timestamp and ensure it is identical across all ranks in distributed mode
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        if utils.is_dist_avail_and_initialized():
+            import torch.distributed as dist
+            objects = [timestamp]
+            dist.broadcast_object_list(objects, src=0)
+            timestamp = objects[0]
+        args.output_dir = os.path.join(args.output_dir, f"{args.model}_{timestamp}")
+        
+        # If writer_output is the default './', also put the tensorboard runs inside the output directory
+        if args.writer_output == './':
+            args.writer_output = args.output_dir
+            
+        if utils.is_main_process():
+            os.makedirs(args.output_dir, exist_ok=True)
+        if utils.is_dist_avail_and_initialized():
+            import torch.distributed as dist
+            dist.barrier()
 
     if args.local_rank == 0:
         writer = SummaryWriter(os.path.join(args.writer_output, 'runs'))
@@ -508,6 +616,7 @@ def main(args):
         if args.output_dir and utils.is_main_process():
             with (output_dir / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
+            plot_learning_curves(output_dir / "log.txt", output_dir)
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
