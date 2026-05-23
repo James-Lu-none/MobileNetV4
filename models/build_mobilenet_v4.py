@@ -701,9 +701,9 @@ def _gen_mobilenet_v4(
     model = _create_mnv4(variant, pretrained, **model_kwargs)
     return model
 
-
+#location
 def _gen_dynamic_mobilenet_v4(
-        variant: str, channel_multiplier: float = 1.0, group_size=None, pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs,
+        variant: str, channel_multiplier: float = 1.0, group_size=None, pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, use_ode_pw: bool = False, use_regular_dw: bool = False, ode_num_steps: int = 10, **kwargs,
 ) -> MobileNetV4:
     """Creates a MobileNet-V4 model.
 
@@ -931,6 +931,14 @@ def _gen_dynamic_mobilenet_v4(
         else:
             assert False, f'Unknown variant {variant}.'
 
+
+    suffix = ''
+    if use_regular_dw:
+        suffix += '_dd0'
+    if use_ode_pw:
+        suffix += f'_op1_os{ode_num_steps}'
+    if suffix:
+        arch_def = [[s + suffix for s in stage] for stage in arch_def]
 
     model_kwargs = dict(
         block_args=decode_arch_def(arch_def, group_size=group_size),
@@ -1161,7 +1169,7 @@ def mobilenetv4_hybrid_large_075(pretrained=False, pretrained_cfg=None, pretrain
     model = _gen_mobilenet_v4('mobilenetv4_hybrid_large_075', 0.75, pretrained=pretrained, **kwargs)
     return model
 
-
+#dynamic
 @register_model
 def mobilenetv4_dynamic_conv_small(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs) -> MobileNetV4:
     """ MobileNet V4 Dynamic """
@@ -1194,6 +1202,41 @@ def mobilenetv4_dynamic_hybrid_medium(pretrained=False, pretrained_cfg=None, pre
 def mobilenetv4_dynamic_hybrid_large(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs) -> MobileNetV4:
     """ MobileNet V4 Dynamic Hybrid"""
     model = _gen_dynamic_mobilenet_v4('mobilenetv4_dynamic_hybrid_large', 1.0, pretrained=pretrained, **kwargs)
+    return model
+
+
+@register_model
+def mobilenetv4_ode_conv_small(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs) -> MobileNetV4:
+    """ MobileNet V4 ODE (DW -> ODE -> DW -> ODE) """
+    model = _gen_dynamic_mobilenet_v4('mobilenetv4_ode_conv_small', 1.0, pretrained=pretrained, use_ode_pw=True, use_regular_dw=True, **kwargs)
+    return model
+
+
+@register_model
+def mobilenetv4_ode_conv_medium(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs) -> MobileNetV4:
+    """ MobileNet V4 ODE (DW -> ODE -> DW -> ODE) """
+    model = _gen_dynamic_mobilenet_v4('mobilenetv4_ode_conv_medium', 1.0, pretrained=pretrained, use_ode_pw=True, use_regular_dw=True, **kwargs)
+    return model
+
+
+@register_model
+def mobilenetv4_ode_conv_large(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs) -> MobileNetV4:
+    """ MobileNet V4 ODE (DW -> ODE -> DW -> ODE) """
+    model = _gen_dynamic_mobilenet_v4('mobilenetv4_ode_conv_large', 1.0, pretrained=pretrained, use_ode_pw=True, use_regular_dw=True, **kwargs)
+    return model
+
+
+@register_model
+def mobilenetv4_ode_hybrid_medium(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs) -> MobileNetV4:
+    """ MobileNet V4 ODE Hybrid (DW -> ODE -> DW -> ODE) """
+    model = _gen_dynamic_mobilenet_v4('mobilenetv4_ode_hybrid_medium', 1.0, pretrained=pretrained, use_ode_pw=True, use_regular_dw=True, **kwargs)
+    return model
+
+
+@register_model
+def mobilenetv4_ode_hybrid_large(pretrained=False, pretrained_cfg=None, pretrained_cfg_overlay=None, **kwargs) -> MobileNetV4:
+    """ MobileNet V4 ODE Hybrid (DW -> ODE -> DW -> ODE) """
+    model = _gen_dynamic_mobilenet_v4('mobilenetv4_ode_hybrid_large', 1.0, pretrained=pretrained, use_ode_pw=True, use_regular_dw=True, **kwargs)
     return model
 
 # if __name__ == '__main__':

@@ -230,6 +230,14 @@ def _decode_block_str(block_str):
                 block_args['dynamic_ratio'] = float(options['dr'])
             if 'dpw' in options:
                 block_args['dynamic_pw'] = bool(int(options['dpw']))
+            if 'dd' in options:
+                block_args['dynamic_dw'] = bool(int(options['dd']))
+            if 'od' in options:
+                block_args['ode_dw'] = bool(int(options['od']))
+            if 'op' in options:
+                block_args['ode_pw'] = bool(int(options['op']))
+            if 'os' in options:
+                block_args['ode_num_steps'] = int(options['os'])
     elif block_type == 'mha':
         kv_dim = int(options['d'])
         block_args.update(dict(

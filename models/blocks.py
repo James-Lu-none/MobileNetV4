@@ -12,7 +12,7 @@ __all__ = [
     'SqueezeExcite', 'ConvBnAct', 'DepthwiseSeparableConv',
     'InvertedResidual', 'CondConvResidual', 'EdgeResidual',
     'UniversalInvertedResidual', 'MobileAttention',
-    'DynamicUniversalInvertedResidual'
+    'DynamicUniversalInvertedResidual', 'ODE_conv2d'
 ]
 
 ModuleType = Type[nn.Module]
@@ -314,6 +314,50 @@ class Dynamic_conv2d(nn.Module):
         return output
 
 
+class ODE_conv2d(nn.Module):
+    """
+    Neural ODE conv2d using Euler integration.
+    Applies a learnable conv as ODE function f(x):
+        x_{k+1} = x_k + dt * f(x_k),  dt = 1 / num_steps
+    A projection conv handles stride and channel mismatch first.
+    """
+    def __init__(self, in_planes, out_planes, kernel_size, stride=1, padding=0,
+                 dilation=1, groups=1, bias=False, num_steps=10):
+        super(ODE_conv2d, self).__init__()
+        self.in_planes = in_planes
+        self.out_planes = out_planes
+        self.num_steps = num_steps
+
+        self.proj = nn.Conv2d(
+            in_planes, out_planes, kernel_size,
+            stride=stride, padding=padding,
+            dilation=dilation, groups=groups, bias=bias,
+        )
+        ode_groups = groups if out_planes % groups == 0 else 1
+        self.ode_func = nn.Conv2d(
+            out_planes, out_planes, kernel_size,
+            stride=1, padding=padding,
+            dilation=dilation, groups=ode_groups, bias=bias,
+        )
+        self.dt = nn.Parameter(torch.randn(num_steps))
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        nn.init.kaiming_uniform_(self.proj.weight)
+        nn.init.zeros_(self.ode_func.weight)
+        if self.proj.bias is not None:
+            nn.init.zeros_(self.proj.bias)
+        if self.ode_func.bias is not None:
+            nn.init.zeros_(self.ode_func.bias)
+
+    def forward(self, x):
+        x = self.proj(x)
+        for k in range(self.num_steps):
+            delta_t = F.relu6(self.dt[k])
+            x = x + delta_t * self.ode_func(x)
+        return x
+
+
 class InvertedResidual(nn.Module):
     """ Inverted residual block w/ optional SE
 
@@ -589,7 +633,11 @@ class DynamicUniversalInvertedResidual(nn.Module):
             dynamic_K: int = 4,
             dynamic_temperature: int = 34,
             dynamic_ratio: float = 0.25,
+            dynamic_dw: bool = True,
             dynamic_pw: bool = True,
+            ode_num_steps: int = 6,
+            ode_dw: bool = False,
+            ode_pw: bool = False,
     ):
         super(DynamicUniversalInvertedResidual, self).__init__()
         conv_kwargs = conv_kwargs or {}
@@ -600,7 +648,7 @@ class DynamicUniversalInvertedResidual(nn.Module):
         norm_act_layer = get_norm_act_layer(norm_layer, act_layer)
         norm_layer_no_act = get_norm_act_layer(norm_layer, None)
 
-        def make_conv_norm_act(in_c, out_c, k_size, stride_c, groups_c, use_act=True, apply_aa=False, use_dynamic=True):
+        def make_conv_norm_act(in_c, out_c, k_size, stride_c, groups_c, use_act=True, apply_aa=False, use_dynamic=True, use_ode=False):
             if pad_type == 'same':
                 padding = (k_size - 1) // 2 * dilation
             elif pad_type == '':
@@ -609,17 +657,24 @@ class DynamicUniversalInvertedResidual(nn.Module):
                 padding = pad_type
             else:
                 padding = (k_size - 1) // 2 * dilation
-                
+
+            eff_stride = 1 if apply_aa and stride_c > 1 else stride_c
             if use_dynamic:
                 conv = Dynamic_conv2d(
                     in_planes=in_c, out_planes=out_c, kernel_size=k_size,
-                    ratio=dynamic_ratio, stride=1 if apply_aa and stride_c > 1 else stride_c, padding=padding,
+                    ratio=dynamic_ratio, stride=eff_stride, padding=padding,
                     dilation=dilation, groups=groups_c, bias=False, K=dynamic_K, temperature=dynamic_temperature
+                )
+            elif use_ode:
+                conv = ODE_conv2d(
+                    in_planes=in_c, out_planes=out_c, kernel_size=k_size,
+                    stride=eff_stride, padding=padding,
+                    dilation=dilation, groups=groups_c, bias=False, num_steps=ode_num_steps
                 )
             else:
                 conv = create_conv2d(
                     in_c, out_c, kernel_size=k_size,
-                    stride=1 if apply_aa and stride_c > 1 else stride_c, padding=padding,
+                    stride=eff_stride, padding=padding,
                     dilation=dilation, groups=groups_c, bias=False, **conv_kwargs
                 )
             norm = norm_act_layer(out_c, inplace=True) if use_act else norm_layer_no_act(out_c)
@@ -632,32 +687,32 @@ class DynamicUniversalInvertedResidual(nn.Module):
         if dw_kernel_size_start:
             dw_start_stride = stride if not dw_kernel_size_mid else 1
             dw_start_groups = num_groups(group_size, in_chs)
-            self.dw_start = make_conv_norm_act(in_chs, in_chs, dw_kernel_size_start, dw_start_stride, dw_start_groups, use_act=False, apply_aa=True, use_dynamic=True)
+            self.dw_start = make_conv_norm_act(in_chs, in_chs, dw_kernel_size_start, dw_start_stride, dw_start_groups, use_act=False, apply_aa=True, use_dynamic=dynamic_dw and not ode_dw, use_ode=ode_dw)
         else:
             self.dw_start = nn.Identity()
 
         mid_chs = make_divisible(in_chs * exp_ratio)
         if mid_chs != in_chs:
-            self.pw_exp = make_conv_norm_act(in_chs, mid_chs, 1, 1, 1, use_act=True, apply_aa=False, use_dynamic=dynamic_pw)
+            self.pw_exp = make_conv_norm_act(in_chs, mid_chs, 1, 1, 1, use_act=True, apply_aa=False, use_dynamic=dynamic_pw and not ode_pw, use_ode=ode_pw)
         else:
             self.pw_exp = nn.Identity()
 
         if dw_kernel_size_mid:
             groups = num_groups(group_size, mid_chs)
-            self.dw_mid = make_conv_norm_act(mid_chs, mid_chs, dw_kernel_size_mid, stride, groups, use_act=True, apply_aa=True, use_dynamic=True)
+            self.dw_mid = make_conv_norm_act(mid_chs, mid_chs, dw_kernel_size_mid, stride, groups, use_act=True, apply_aa=True, use_dynamic=dynamic_dw and not ode_dw, use_ode=ode_dw)
         else:
             self.dw_mid = nn.Identity()
 
         self.se = se_layer(mid_chs, act_layer=act_layer) if se_layer else nn.Identity()
 
-        self.pw_proj = make_conv_norm_act(mid_chs, out_chs, 1, 1, 1, use_act=False, apply_aa=False, use_dynamic=dynamic_pw)
+        self.pw_proj = make_conv_norm_act(mid_chs, out_chs, 1, 1, 1, use_act=False, apply_aa=False, use_dynamic=dynamic_pw and not ode_pw, use_ode=ode_pw)
 
         if dw_kernel_size_end:
             dw_end_stride = stride if not dw_kernel_size_start and not dw_kernel_size_mid else 1
             dw_end_groups = num_groups(group_size, out_chs)
             if dw_end_stride > 1:
                 assert not aa_layer
-            self.dw_end = make_conv_norm_act(out_chs, out_chs, dw_kernel_size_end, dw_end_stride, dw_end_groups, use_act=False, apply_aa=False, use_dynamic=True)
+            self.dw_end = make_conv_norm_act(out_chs, out_chs, dw_kernel_size_end, dw_end_stride, dw_end_groups, use_act=False, apply_aa=False, use_dynamic=dynamic_dw and not ode_dw, use_ode=ode_dw)
         else:
             self.dw_end = nn.Identity()
 
@@ -694,6 +749,7 @@ class DynamicUniversalInvertedResidual(nn.Module):
         for m in self.modules():
             if isinstance(m, Dynamic_conv2d):
                 m.update_temperature()
+                
 
 class MultiQueryAttention2d(nn.Module):
     """Multi Query Attention with spatial downsampling.
