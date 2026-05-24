@@ -52,20 +52,20 @@ from estimate_model import Predictor, Plot_ROC, OptAUC
 def get_args_parser():
     parser = argparse.ArgumentParser(
         'MobileNetV4 training and evaluation script', add_help=False)
-    parser.add_argument('--batch-size', default=16, type=int)
+    parser.add_argument('--batch-size', default=64, type=int)
     parser.add_argument('--epochs', default=300, type=int)
     parser.add_argument('--predict', default=True, type=bool, help='plot ROC curve and confusion matrix')
     parser.add_argument('--opt_auc', default=False, type=bool, help='Optimize AUC')
 
     # Model parameters
-    parser.add_argument('--model', default='mobilenetv4_conv_large', type=str, metavar='MODEL',
+    parser.add_argument('--model', default='mobilenetv4_ode_conv_small', type=str, metavar='MODEL',
                         choices=['mobilenetv4_hybrid_large', 'mobilenetv4_hybrid_medium', 'mobilenetv4_hybrid_large_075',
                                 'mobilenetv4_conv_large', 'mobilenetv4_conv_aa_large', 'mobilenetv4_conv_medium',
                                 'mobilenetv4_conv_aa_medium', 'mobilenetv4_conv_small', 'mobilenetv4_hybrid_medium_075',
                                 'mobilenetv4_conv_small_035', 'mobilenetv4_conv_small_050', 'mobilenetv4_conv_blur_medium',
                                 'mobilenetv4_dynamic_conv_small', 'mobilenetv4_dynamic_conv_medium',
                                 'mobilenetv4_dynamic_conv_large', 'mobilenetv4_dynamic_hybrid_medium',
-                                'mobilenetv4_dynamic_hybrid_large'],
+                                'mobilenetv4_dynamic_hybrid_large','mobilenetv4_ode_conv_small'],
                         help='Name of model to train')
     parser.add_argument('--extra_attention_block', default=False, type=bool, help='Add an extra attention block')
     parser.add_argument('--input-size', default=384, type=int, help='images input size')
@@ -178,7 +178,7 @@ def get_args_parser():
                         help='set BN layers to eval mode during finetuning.')
 
     # Dataset parameters
-    parser.add_argument('--data_root', default='./datasets/imagenet1k', type=str,
+    parser.add_argument('--data_root', default='./datasets/flowers', type=str,
                         help='dataset path')
     parser.add_argument('--nb_classes', default=1000, type=int,
                         help='number classes of your dataset')
