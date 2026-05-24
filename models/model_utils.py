@@ -106,7 +106,6 @@ def _decode_block_str(block_str):
       cn = Conv2d + Norm + Act,
       uir = UniversalInvertedResidual,
       duir = DynamicUniversalInvertedResidual,
-      ouir = ODEUniversalInvertedResidual,
       mqa = MobileMultiQueryAttention,
       mha = MobileMultiHeadAttention,
     )
@@ -210,7 +209,7 @@ def _decode_block_str(block_str):
             kernel_size=int(options['k']),
             skip=skip is True,
         ))
-    elif block_type in ('uir', 'duir', 'ouir'):
+    elif block_type == 'uir' or block_type == 'duir':
         # override exp / proj kernels for start/end in uir block
         start_kernel_size = _parse_ksize(options['a']) if 'a' in options else 0
         end_kernel_size = _parse_ksize(options['p']) if 'p' in options else 0
@@ -233,7 +232,6 @@ def _decode_block_str(block_str):
                 block_args['dynamic_pw'] = bool(int(options['dpw']))
             if 'dd' in options:
                 block_args['dynamic_dw'] = bool(int(options['dd']))
-        elif block_type == 'ouir':
             if 'od' in options:
                 block_args['ode_dw'] = bool(int(options['od']))
             if 'op' in options:
@@ -456,9 +454,6 @@ class EfficientNetBuilder:
         elif bt == 'duir':
             _log_info_if('  DynamicUniversalInvertedResidual {}, Args: {}'.format(block_idx, str(ba)), self.verbose)
             block = DynamicUniversalInvertedResidual(**ba, layer_scale_init_value=self.layer_scale_init_value)
-        elif bt == 'ouir':
-            _log_info_if('  ODEUniversalInvertedResidual {}, Args: {}'.format(block_idx, str(ba)), self.verbose)
-            block = ODEUniversalInvertedResidual(**ba, layer_scale_init_value=self.layer_scale_init_value)
         elif bt == 'mqa':
             _log_info_if('  MobileMultiQueryAttention {}, Args: {}'.format(block_idx, str(ba)), self.verbose)
             block = MobileAttention(**ba, use_multi_query=True, layer_scale_init_value=self.layer_scale_init_value)
