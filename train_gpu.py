@@ -58,15 +58,19 @@ def get_args_parser():
     parser.add_argument('--opt_auc', default=False, type=bool, help='Optimize AUC')
 
     # Model parameters
-    parser.add_argument('--model', default='mobilenetv4_ode_conv_small', type=str, metavar='MODEL',
+    parser.add_argument('--model', default='mobilenetv4_dynamic_ode_conv_small', type=str, metavar='MODEL',
                         choices=['mobilenetv4_hybrid_large', 'mobilenetv4_hybrid_medium', 'mobilenetv4_hybrid_large_075',
                                 'mobilenetv4_conv_large', 'mobilenetv4_conv_aa_large', 'mobilenetv4_conv_medium',
                                 'mobilenetv4_conv_aa_medium', 'mobilenetv4_conv_small', 'mobilenetv4_hybrid_medium_075',
                                 'mobilenetv4_conv_small_035', 'mobilenetv4_conv_small_050', 'mobilenetv4_conv_blur_medium',
                                 'mobilenetv4_dynamic_conv_small', 'mobilenetv4_dynamic_conv_medium',
                                 'mobilenetv4_dynamic_conv_large', 'mobilenetv4_dynamic_hybrid_medium',
-                                'mobilenetv4_dynamic_hybrid_large','mobilenetv4_ode_conv_small'],
+                                'mobilenetv4_dynamic_hybrid_large','mobilenetv4_ode_conv_small',
+                                'mobilenetv4_dynamic_ode_conv_small', 'mobilenetv4_dynamic_ode_conv_medium',
+                                'mobilenetv4_dynamic_ode_conv_large', 'mobilenetv4_dynamic_ode_hybrid_medium',
+                                'mobilenetv4_dynamic_ode_hybrid_large'],
                         help='Name of model to train')
+    parser.add_argument('--ode-num-steps', default=6, type=int, help='Number of ODE steps for ODE conv blocks')
     parser.add_argument('--extra_attention_block', default=False, type=bool, help='Add an extra attention block')
     parser.add_argument('--input-size', default=384, type=int, help='images input size')
     parser.add_argument('--model-ema', action='store_true')
@@ -180,7 +184,7 @@ def get_args_parser():
     # Dataset parameters
     parser.add_argument('--data_root', default='./datasets/flowers', type=str,
                         help='dataset path')
-    parser.add_argument('--nb_classes', default=1000, type=int,
+    parser.add_argument('--nb_classes', default=5, type=int,
                         help='number classes of your dataset')
     parser.add_argument('--data-set', default='IMNET', choices=['CIFAR', 'IMNET', 'INAT', 'INAT19'],
                         type=str, help='Image Net dataset path')
@@ -411,6 +415,7 @@ def main(args):
     model = create_model(
         args.model,
         extra_attention_block=args.extra_attention_block,
+        ode_num_steps=args.ode_num_steps,
         args=args
     )
     model.reset_classifier(num_classes=args.nb_classes)
@@ -627,6 +632,7 @@ def main(args):
         model_predict = create_model(
             args.model,
             extra_attention_block=args.extra_attention_block,
+            ode_num_steps=args.ode_num_steps,
             args=args
         )
 

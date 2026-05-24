@@ -107,6 +107,7 @@ def _decode_block_str(block_str):
       uir = UniversalInvertedResidual,
       duir = DynamicUniversalInvertedResidual,
       ouir = ODEUniversalInvertedResidual,
+      douir = DynamicODEUniversalInvertedResidual,
       mqa = MobileMultiQueryAttention,
       mha = MobileMultiHeadAttention,
     )
@@ -459,6 +460,9 @@ class EfficientNetBuilder:
         elif bt == 'ouir':
             _log_info_if('  ODEUniversalInvertedResidual {}, Args: {}'.format(block_idx, str(ba)), self.verbose)
             block = ODEUniversalInvertedResidual(**ba, layer_scale_init_value=self.layer_scale_init_value)
+        elif bt == 'douir':
+            _log_info_if('  DynamicODEUniversalInvertedResidual {}, Args: {}'.format(block_idx, str(ba)), self.verbose)
+            block = DynamicODEUniversalInvertedResidual(**ba, layer_scale_init_value=self.layer_scale_init_value)
         elif bt == 'mqa':
             _log_info_if('  MobileMultiQueryAttention {}, Args: {}'.format(block_idx, str(ba)), self.verbose)
             block = MobileAttention(**ba, use_multi_query=True, layer_scale_init_value=self.layer_scale_init_value)
