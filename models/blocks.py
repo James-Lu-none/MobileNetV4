@@ -1,5 +1,7 @@
 from typing import Callable, Dict, Optional, Type, List, Optional, Type, Union
 
+import math
+
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -12,7 +14,7 @@ __all__ = [
     'SqueezeExcite', 'ConvBnAct', 'DepthwiseSeparableConv',
     'InvertedResidual', 'CondConvResidual', 'EdgeResidual',
     'UniversalInvertedResidual', 'MobileAttention',
-    'DynamicUniversalInvertedResidual', 'ODEUniversalInvertedResidual', 'DynamicODEUniversalInvertedResidual', 'ODE_conv2d'
+    'DynamicUniversalInvertedResidual', 'ODEUniversalInvertedResidual', 'DynamicODEUniversalInvertedResidual'
 ]
 
 ModuleType = Type[nn.Module]
@@ -316,16 +318,26 @@ class Dynamic_conv2d(nn.Module):
 
 class ODE_conv2d(nn.Module):
     """
-    Neural ODE conv2d using Euler integration.
-    Applies a learnable conv as ODE function f(x):
-        x_{k+1} = x_k + dt * f(x_k),  dt = 1 / num_steps
-    A projection conv handles stride and channel mismatch first.
+    Neural ODE conv2d with COS-style driven dynamics (DDE) using Euler integration.
+
+    Projection conv handles stride and channel mismatch first, then:
+        y^0 = proj(x)
+        y^{k+1} = y^k + dt_k * g_k(y^0)
+        output   = y^L + y^0
+
+    out_planes is factorized as a * b (a <= b, a closest to sqrt(out_planes)).
+    Phi has shape (num_steps, a, a) and acts on the a-dimension of the
+    (B, a, b, H*W) reshape of the channel axis.  Works for any out_planes.
     """
     def __init__(self, in_planes, out_planes, kernel_size, stride=1, padding=0,
                  dilation=1, groups=1, bias=False, num_steps=6):
         super(ODE_conv2d, self).__init__()
+        a, b = ODE_conv2d._factorize(out_planes)
+
         self.in_planes = in_planes
         self.out_planes = out_planes
+        self.a = a
+        self.b = b
         self.num_steps = num_steps
 
         self.proj = nn.Conv2d(
@@ -333,29 +345,38 @@ class ODE_conv2d(nn.Module):
             stride=stride, padding=padding,
             dilation=dilation, groups=groups, bias=bias,
         )
-        ode_groups = groups if out_planes % groups == 0 else 1
-        self.ode_func = nn.Conv2d(
-            out_planes, out_planes, kernel_size,
-            stride=1, padding=padding,
-            dilation=dilation, groups=ode_groups, bias=bias,
-        )
-        self.dt = nn.Parameter(torch.randn(num_steps))
+        # per-step channelwise weight matrices: (num_steps, a, a)
+        self.Phi = nn.Parameter(torch.empty(num_steps, a, a))
+        self.dt = nn.Parameter(torch.zeros(num_steps))
         self._initialize_weights()
+
+    @staticmethod
+    def _factorize(C: int):
+        """Return (a, b) with a*b==C, a<=b, a closest to sqrt(C)."""
+        for a in range(int(math.isqrt(C)), 0, -1):
+            if C % a == 0:
+                return a, C // a
+        return 1, C
 
     def _initialize_weights(self):
         nn.init.kaiming_uniform_(self.proj.weight)
-        nn.init.zeros_(self.ode_func.weight)
         if self.proj.bias is not None:
             nn.init.zeros_(self.proj.bias)
-        if self.ode_func.bias is not None:
-            nn.init.zeros_(self.ode_func.bias)
+        for i in range(self.num_steps):
+            nn.init.eye_(self.Phi.data[i])
+
+    def _g(self, x: torch.Tensor, k: int) -> torch.Tensor:
+        B, C, H, W = x.shape
+        x_r = x.reshape(B, self.a, self.b, H * W)
+        g = torch.einsum('mn,bnqp->bmqp', self.Phi[k], x_r)
+        return g.reshape(B, C, H, W)
 
     def forward(self, x):
-        x = self.proj(x)
+        x_proj = self.proj(x)
+        y = x_proj.clone()
         for k in range(self.num_steps):
-            delta_t = F.relu6(self.dt[k])
-            x = x + delta_t * self.ode_func(x)
-        return x
+            y = y + F.relu6(self.dt[k]) * self._g(x_proj, k)
+        return y + x_proj
 
 
 class InvertedResidual(nn.Module):
