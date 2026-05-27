@@ -4,7 +4,8 @@ __pycache__/
 *$py.class
 .idea/
 
-output
+*.json
+output/*
 
 *.jpg
 *.jpeg
