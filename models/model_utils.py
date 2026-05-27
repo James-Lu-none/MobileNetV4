@@ -211,7 +211,7 @@ def _decode_block_str(block_str):
             kernel_size=int(options['k']),
             skip=skip is True,
         ))
-    elif block_type in ('uir', 'duir', 'ouir'):
+    elif block_type in ('uir', 'duir', 'ouir', 'douir'):
         # override exp / proj kernels for start/end in uir block
         start_kernel_size = _parse_ksize(options['a']) if 'a' in options else 0
         end_kernel_size = _parse_ksize(options['p']) if 'p' in options else 0
@@ -239,6 +239,17 @@ def _decode_block_str(block_str):
                 block_args['ode_dw'] = bool(int(options['od']))
             if 'op' in options:
                 block_args['ode_pw'] = bool(int(options['op']))
+            if 'os' in options:
+                block_args['ode_num_steps'] = int(options['os'])
+        elif block_type == 'douir':
+            if 'dk' in options:
+                block_args['dynamic_K'] = int(options['dk'])
+            if 'dt' in options:
+                block_args['dynamic_temperature'] = int(options['dt'])
+            if 'dr' in options:
+                block_args['dynamic_ratio'] = float(options['dr'])
+            if 'dd' in options:
+                block_args['dynamic_dw'] = bool(int(options['dd']))
             if 'os' in options:
                 block_args['ode_num_steps'] = int(options['os'])
     elif block_type == 'mha':

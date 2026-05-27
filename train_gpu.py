@@ -52,7 +52,7 @@ from estimate_model import Predictor, Plot_ROC, OptAUC
 def get_args_parser():
     parser = argparse.ArgumentParser(
         'MobileNetV4 training and evaluation script', add_help=False)
-    parser.add_argument('--batch-size', default=64, type=int)
+    parser.add_argument('--batch-size', default=8, type=int)
     parser.add_argument('--epochs', default=300, type=int)
     parser.add_argument('--predict', default=True, type=bool, help='plot ROC curve and confusion matrix')
     parser.add_argument('--opt_auc', default=False, type=bool, help='Optimize AUC')
@@ -70,7 +70,7 @@ def get_args_parser():
                                 'mobilenetv4_dynamic_ode_conv_large', 'mobilenetv4_dynamic_ode_hybrid_medium',
                                 'mobilenetv4_dynamic_ode_hybrid_large'],
                         help='Name of model to train')
-    parser.add_argument('--ode-num-steps', default=6, type=int, help='Number of ODE steps for ODE conv blocks')
+    parser.add_argument('--ode-num-steps', default=10, type=int, help='Number of ODE steps for ODE conv blocks')
     parser.add_argument('--extra_attention_block', default=False, type=bool, help='Add an extra attention block')
     parser.add_argument('--input-size', default=384, type=int, help='images input size')
     parser.add_argument('--model-ema', action='store_true')
