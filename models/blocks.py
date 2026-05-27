@@ -382,9 +382,13 @@ class ODE_conv2d(nn.Module):
 class ChannelwiseODESolver(nn.Module):
     def __init__(self, in_channels, out_channels, num_layers=30):
         super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
         self.num_layers = num_layers
-        self.cin_sqrt=int(in_channels ** 0.5)
-        self.cout_sqrt=int(out_channels ** 0.5)
+        self.cin_sqrt = int(math.ceil(in_channels ** 0.5))
+        self.cout_sqrt = int(math.ceil(out_channels ** 0.5))
+        self.cin_padded = self.cin_sqrt ** 2
+        self.cout_padded = self.cout_sqrt ** 2
         # originally, batch normalized is used with a value i where i*i=H*W, but i choose to use layer norm here
         # since layer norm is more suitable for variable batch size 
         self.sigma = nn.Sequential(
@@ -416,9 +420,13 @@ class ChannelwiseODESolver(nn.Module):
     def forward(self, x):
         B, C, H, W = x.size()
         # (b, Cin, H, W)
+        
+        if C < self.cin_padded:
+            pad_size = self.cin_padded - C
+            x = F.pad(x, (0, 0, 0, 0, 0, pad_size))
 
         # (B, H*W, sqrt(Cout), sqrt(Cout))
-        x_expanded = self.feature_reshape(x, B, C)  
+        x_expanded = self.feature_reshape(x, B, self.cin_padded)  
         y0 = x_expanded
 
         delta_t = torch.maximum(torch.tensor(self.epsilon, device=x.device), self.delta_t)
@@ -430,11 +438,11 @@ class ChannelwiseODESolver(nn.Module):
             y0 = y0 + dt * dydt
         
         # (B, H, W, Cout)
-        y_out = (y0 + x_expanded).contiguous().view(B, H, W, self.cout_sqrt * self.cout_sqrt)
+        y_out = (y0 + x_expanded).contiguous().view(B, H, W, self.cout_padded)
         # (b, Cout, H, W)
         y0 = y_out.permute(0, 3, 1, 2).contiguous()
 
-        return y0
+        return y0[:, :self.out_channels, :, :]
 
 
 class InvertedResidual(nn.Module):
