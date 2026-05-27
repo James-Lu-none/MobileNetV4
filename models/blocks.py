@@ -391,8 +391,10 @@ class ChannelwiseODESolver(nn.Module):
         self.cout_padded = self.cout_sqrt ** 2
         # originally, batch normalized is used with a value i where i*i=H*W, but i choose to use layer norm here
         # since layer norm is more suitable for variable batch size 
-        self.sigma = nn.Sequential(
-            nn.LayerNorm([self.cout_sqrt, self.cout_sqrt]),
+        self.norm_relu = nn.Sequential(
+            # nn.LayerNorm([self.cout_sqrt, self.cout_sqrt]),\
+            # use cout_padded instead of cout_sqrt since LayerNorm doesn't work under 2D tensor
+            nn.LayerNorm(self.cout_padded), 
             nn.ReLU6()
         )
         
@@ -434,7 +436,16 @@ class ChannelwiseODESolver(nn.Module):
         for layer in range(self.num_layers):
             dt = delta_t[layer]
             result = torch.matmul(y0, self.phi[layer])
-            dydt = -y0 + self.sigma(y0 + result)
+            
+            combined = y0 + result
+            # reshape to 1D tensor
+            combined_flat = combined.view(B, H * W, self.cout_padded)
+            # perform norm_relu on 1D tensor
+            combined_flat = self.norm_relu(combined_flat)
+            # reshape back to 2D tensor
+            combined = combined_flat.view(B, H * W, self.cout_sqrt, self.cout_sqrt)
+            
+            dydt = -y0 + combined
             y0 = y0 + dt * dydt
         
         # (B, H, W, Cout)
