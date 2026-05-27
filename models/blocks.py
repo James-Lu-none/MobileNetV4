@@ -851,10 +851,8 @@ class ODEUniversalInvertedResidual(nn.Module):
             padding = pad_type if isinstance(pad_type, int) else (k_size - 1) // 2 * dilation
             eff_stride = 1 if apply_aa and stride_c > 1 else stride_c
             if use_ode:
-                conv = ODE_conv2d(
-                    in_planes=in_c, out_planes=out_c, kernel_size=k_size,
-                    stride=eff_stride, padding=padding,
-                    dilation=dilation, groups=groups_c, bias=False, num_steps=ode_num_steps,
+                conv = ChannelwiseODESolver(
+                    in_planes=in_c, out_planes=out_c, num_steps=ode_num_steps
                 )
             else:
                 conv = create_conv2d(
@@ -931,7 +929,7 @@ class ODEUniversalInvertedResidual(nn.Module):
 
 
 class DynamicODEUniversalInvertedResidual(nn.Module):
-    """UIB block with Dynamic_conv2d for DW layers and ODE_conv2d for PW layers."""
+    """UIB block with Dynamic_conv2d for DW layers and ChannelwiseODESolver for PW layers."""
 
     def __init__(
             self,
@@ -992,10 +990,8 @@ class DynamicODEUniversalInvertedResidual(nn.Module):
 
         def make_pw(in_c, out_c, k_size, stride_c, groups_c, use_act=True):
             padding = pad_type if isinstance(pad_type, int) else (k_size - 1) // 2 * dilation
-            conv = ODE_conv2d(
-                in_planes=in_c, out_planes=out_c, kernel_size=k_size,
-                stride=stride_c, padding=padding,
-                dilation=dilation, groups=groups_c, bias=False, num_steps=ode_num_steps,
+            conv = ChannelwiseODESolver(
+                in_planes=in_c, out_planes=out_c, num_steps=ode_num_steps
             )
             norm = norm_act_layer(out_c, inplace=True) if use_act else norm_layer_no_act(out_c)
             return nn.Sequential(conv, norm)
