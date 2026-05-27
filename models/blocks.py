@@ -379,6 +379,64 @@ class ODE_conv2d(nn.Module):
         return y + x_proj
 
 
+class ChannelwiseODESolver(nn.Module):
+    def __init__(self, in_channels, out_channels, num_layers=30):
+        super().__init__()
+        self.num_layers = num_layers
+        self.cin_sqrt=int(in_channels ** 0.5)
+        self.cout_sqrt=int(out_channels ** 0.5)
+        # originally, batch normalized is used with a value i where i*i=H*W, but i choose to use layer norm here
+        # since layer norm is more suitable for variable batch size 
+        self.sigma = nn.Sequential(
+            nn.LayerNorm([self.cout_sqrt, self.cout_sqrt]),
+            nn.ReLU6()
+        )
+        
+        self.epsilon = 1.0 / num_layers
+
+        # init phi and delta t
+        self.delta_t = nn.Parameter(torch.empty(num_layers, 1).uniform_(1e-4, 1))
+        self.phi = nn.Parameter(torch.empty(num_layers, 1, 1, self.cout_sqrt, self.cout_sqrt))
+        torch.nn.init.normal_(self.phi, mean=0, std=0.1)
+        torch.nn.init.normal_(self.delta_t, mean=0.4, std=0.005)
+
+    def feature_reshape(self, x, b, c):
+        x_reshaped = x.view(b, c, -1)  # (b, Cin, H*W)
+        x_reshaped = x_reshaped.permute(0, 2, 1).contiguous()  # (b, H*W, Cin)
+        # print(self.cin_sqrt,self.cout_sqrt,x.shape)
+        if self.cin_sqrt != self.cout_sqrt:
+            # (b, H*W, sqrt(Cin), sqrt(Cin))
+            x_reshaped = x_reshaped.view(b, -1, self.cin_sqrt, self.cin_sqrt)
+            # (b, H*W, sqrt(Cout), sqrt(Cout))
+            x_expanded = F.interpolate(x_reshaped, size=(self.cout_sqrt, self.cout_sqrt), mode='bilinear', align_corners=False)
+        else:
+            x_expanded = x_reshaped.view(b, -1, self.cout_sqrt, self.cout_sqrt)
+        return x_expanded
+    
+    def forward(self, x):
+        B, C, H, W = x.size()
+        # (b, Cin, H, W)
+
+        # (B, H*W, sqrt(Cout), sqrt(Cout))
+        x_expanded = self.feature_reshape(x, B, C)  
+        y0 = x_expanded
+
+        delta_t = torch.maximum(torch.tensor(self.epsilon, device=x.device), self.delta_t)
+        
+        for layer in range(self.num_layers):
+            dt = delta_t[layer]
+            result = torch.matmul(y0, self.phi[layer])
+            dydt = -y0 + self.sigma(y0 + result)
+            y0 = y0 + dt * dydt
+        
+        # (B, H, W, Cout)
+        y_out = (y0 + x_expanded).contiguous().view(B, H, W, self.cout_sqrt * self.cout_sqrt)
+        # (b, Cout, H, W)
+        y0 = y_out.permute(0, 3, 1, 2).contiguous()
+
+        return y0
+
+
 class InvertedResidual(nn.Module):
     """ Inverted residual block w/ optional SE
 
