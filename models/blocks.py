@@ -826,6 +826,7 @@ class ODEUniversalInvertedResidual(nn.Module):
             self.dw_start = nn.Identity()
 
         mid_chs = make_divisible(in_chs * exp_ratio)
+        mid_chs = int(round(mid_chs ** 0.5)) ** 2
         if mid_chs != in_chs:
             self.pw_exp = make_conv_norm_act(in_chs, mid_chs, 1, 1, 1, use_act=True, apply_aa=False, use_ode=ode_pw)
         else:
@@ -956,6 +957,7 @@ class DynamicODEUniversalInvertedResidual(nn.Module):
             self.dw_start = nn.Identity()
 
         mid_chs = make_divisible(in_chs * exp_ratio)
+        mid_chs = int(round(mid_chs ** 0.5)) ** 2
         if mid_chs != in_chs:
             self.pw_exp = make_pw(in_chs, mid_chs, 1, 1, 1, use_act=True)
         else:

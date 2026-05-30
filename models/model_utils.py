@@ -32,7 +32,7 @@ def named_modules(
 
 
 __all__ = ["EfficientNetBuilder", "BlockArgs", "decode_arch_def", "efficientnet_init_weights",
-           'resolve_bn_args', 'resolve_act_layer', 'round_channels', 'BN_MOMENTUM_TF_DEFAULT', 'BN_EPS_TF_DEFAULT']
+           'resolve_bn_args', 'resolve_act_layer', 'round_channels', 'round_channels_to_perfect_square', 'BN_MOMENTUM_TF_DEFAULT', 'BN_EPS_TF_DEFAULT']
 
 _logger = logging.getLogger(__name__)
 
@@ -75,6 +75,13 @@ def round_channels(channels, multiplier=1.0, divisor=8, channel_min=None, round_
     if not multiplier:
         return channels
     return make_divisible(channels * multiplier, divisor, channel_min, round_limit=round_limit)
+
+
+def round_channels_to_perfect_square(channels, multiplier=1.0, divisor=8, channel_min=None, round_limit=0.9):
+    """Scale channels and round to the nearest perfect square."""
+    scaled = round_channels(channels, multiplier=multiplier, divisor=divisor, channel_min=channel_min, round_limit=round_limit)
+    return int(round(scaled ** 0.5)) ** 2
+
 
 
 def _log_info_if(msg, condition):

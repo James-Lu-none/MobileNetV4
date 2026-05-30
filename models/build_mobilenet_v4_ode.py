@@ -6,7 +6,7 @@ from functools import partial
 import torch.nn as nn
 
 from timm.models._registry import register_model
-from models.model_utils import decode_arch_def, round_channels, resolve_bn_args, resolve_act_layer
+from models.model_utils import decode_arch_def, round_channels_to_perfect_square, resolve_bn_args, resolve_act_layer
 from .build_mobilenet_v4_common import MobileNetV4, _create_mnv4
 
 
@@ -15,7 +15,7 @@ def _gen_ode_mobilenet_v4(
         pretrained_cfg=None, pretrained_cfg_overlay=None, ode_num_steps: int = 10, **kwargs,
 ) -> MobileNetV4:
     """Creates a MobileNet-V4 model with ODE Conv2d blocks (ouir)."""
-    num_features = 1280
+    num_features = 1296
     if 'hybrid' in variant:
         layer_scale_init_value = 1e-5
         if 'medium' in variant:
@@ -242,7 +242,7 @@ def _gen_ode_mobilenet_v4(
         num_features=num_features,
         stem_size=stem_size,
         fix_stem=channel_multiplier < 1.0,
-        round_chs_fn=partial(round_channels, multiplier=channel_multiplier),
+        round_chs_fn=partial(round_channels_to_perfect_square, multiplier=channel_multiplier),
         norm_layer=partial(nn.BatchNorm2d, **resolve_bn_args(kwargs)),
         act_layer=act_layer,
         layer_scale_init_value=layer_scale_init_value,
