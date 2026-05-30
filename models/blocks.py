@@ -322,16 +322,16 @@ class ChannelwiseODESolver(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.num_layers = num_layers
-        self.cin_sqrt = int(math.ceil(in_channels ** 0.5))
-        self.cout_sqrt = int(math.ceil(out_channels ** 0.5))
-        self.cin_padded = self.cin_sqrt ** 2
-        self.cout_padded = self.cout_sqrt ** 2
+        self.cin_sqrt = int(in_channels ** 0.5)
+        self.cout_sqrt = int(out_channels ** 0.5)
+        
+        assert self.cin_sqrt ** 2 == in_channels, f"in_channels {in_channels} must be a perfect square"
+        assert self.cout_sqrt ** 2 == out_channels, f"out_channels {out_channels} must be a perfect square"
+
         # originally, batch normalized is used with a value i where i*i=H*W, but i choose to use layer norm here
         # since layer norm is more suitable for variable batch size 
         self.norm_relu = nn.Sequential(
-            # nn.LayerNorm([self.cout_sqrt, self.cout_sqrt]),\
-            # use cout_padded instead of cout_sqrt since LayerNorm doesn't work under 2D tensor
-            nn.LayerNorm(self.cout_padded), 
+            nn.LayerNorm(self.out_channels), 
             nn.ReLU6()
         )
         
@@ -360,12 +360,8 @@ class ChannelwiseODESolver(nn.Module):
         B, C, H, W = x.size()
         # (b, Cin, H, W)
         
-        if C < self.cin_padded:
-            pad_size = self.cin_padded - C
-            x = F.pad(x, (0, 0, 0, 0, 0, pad_size))
-
         # (B, H*W, sqrt(Cout), sqrt(Cout))
-        x_expanded = self.feature_reshape(x, B, self.cin_padded)  
+        x_expanded = self.feature_reshape(x, B, C)  
         y0 = x_expanded
 
         delta_t = torch.maximum(torch.tensor(self.epsilon, device=x.device), self.delta_t)
@@ -376,7 +372,7 @@ class ChannelwiseODESolver(nn.Module):
             
             combined = y0 + result
             # reshape to 1D tensor
-            combined_flat = combined.view(B, H * W, self.cout_padded)
+            combined_flat = combined.view(B, H * W, self.out_channels)
             # perform norm_relu on 1D tensor
             combined_flat = self.norm_relu(combined_flat)
             # reshape back to 2D tensor
@@ -386,11 +382,11 @@ class ChannelwiseODESolver(nn.Module):
             y0 = y0 + dt * dydt
         
         # (B, H, W, Cout)
-        y_out = (y0 + x_expanded).contiguous().view(B, H, W, self.cout_padded)
+        y_out = (y0 + x_expanded).contiguous().view(B, H, W, self.out_channels)
         # (b, Cout, H, W)
         y0 = y_out.permute(0, 3, 1, 2).contiguous()
 
-        return y0[:, :self.out_channels, :, :]
+        return y0
 
 
 class InvertedResidual(nn.Module):
