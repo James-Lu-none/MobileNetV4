@@ -22,6 +22,7 @@ import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
 import json
 import os
+from plot_learning_curves import plot_learning_curves
 
 
 from pathlib import Path
@@ -224,94 +225,7 @@ def get_args_parser():
     return parser
 
 
-def plot_learning_curves(log_path, output_dir):
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-    import json
-    import math
-
-    epochs = []
-    train_loss = []
-    test_loss = []
-    test_acc1 = []
-    test_acc5 = []
-    train_lr = []
-
-    if not os.path.exists(log_path):
-        return
-
-    with open(log_path, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-                epochs.append(entry.get('epoch', 0))
-                train_loss.append(entry.get('train_loss'))
-                test_loss.append(entry.get('test_loss'))
-                test_acc1.append(entry.get('test_acc1'))
-                test_acc5.append(entry.get('test_acc5'))
-                train_lr.append(entry.get('train_lr'))
-            except Exception:
-                continue
-
-    def sanitize(val_list):
-        res = []
-        for v in val_list:
-            if v is None:
-                res.append(float('nan'))
-            elif isinstance(v, float) and math.isnan(v):
-                res.append(float('nan'))
-            elif isinstance(v, str) and v.lower() == 'nan':
-                res.append(float('nan'))
-            else:
-                res.append(float(v))
-        return res
-
-    train_loss = sanitize(train_loss)
-    test_loss = sanitize(test_loss)
-    test_acc1 = sanitize(test_acc1)
-    test_acc5 = sanitize(test_acc5)
-    train_lr = sanitize(train_lr)
-
-    if not epochs:
-        return
-
-    fig, axs = plt.subplots(1, 3, figsize=(18, 5))
-    
-    # Plot 1: Loss
-    axs[0].plot(epochs, train_loss, label='Train Loss', color='royalblue', marker='o', markersize=4)
-    if not all(math.isnan(x) for x in test_loss):
-        axs[0].plot(epochs, test_loss, label='Test Loss', color='orange', marker='s', markersize=4)
-    axs[0].set_title('Loss Curve')
-    axs[0].set_xlabel('Epoch')
-    axs[0].set_ylabel('Loss')
-    axs[0].grid(True, linestyle='--', alpha=0.6)
-    axs[0].legend()
-
-    # Plot 2: Accuracy
-    axs[1].plot(epochs, test_acc1, label='Test Acc@1', color='forestgreen', marker='^', markersize=4)
-    axs[1].plot(epochs, test_acc5, label='Test Acc@5', color='crimson', marker='v', markersize=4)
-    axs[1].set_title('Validation Accuracy')
-    axs[1].set_xlabel('Epoch')
-    axs[1].set_ylabel('Accuracy (%)')
-    axs[1].grid(True, linestyle='--', alpha=0.6)
-    axs[1].legend()
-
-    # Plot 3: Learning Rate
-    axs[2].plot(epochs, train_lr, label='Learning Rate', color='purple', marker='d', markersize=4)
-    axs[2].set_title('Learning Rate Schedule')
-    axs[2].set_xlabel('Epoch')
-    axs[2].set_ylabel('LR')
-    axs[2].grid(True, linestyle='--', alpha=0.6)
-    axs[2].legend()
-
-    plt.tight_layout()
-    save_img_path = os.path.join(output_dir, 'learning_curves.png')
-    plt.savefig(save_img_path, dpi=150)
-    plt.close()
+# plot_learning_curves imported from plot_learning_curves.py
 
 
 def main(args):
