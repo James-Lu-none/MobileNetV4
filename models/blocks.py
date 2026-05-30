@@ -317,7 +317,7 @@ class Dynamic_conv2d(nn.Module):
 
 
 class ChannelwiseODESolver(nn.Module):
-    def __init__(self, in_channels, out_channels, num_layers=30):
+    def __init__(self, in_channels, out_channels, num_layers=10):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -790,7 +790,7 @@ class ODEUniversalInvertedResidual(nn.Module):
             conv_kwargs: Optional[Dict] = None,
             drop_path_rate: float = 0.,
             layer_scale_init_value: Optional[float] = 1e-5,
-            ode_num_steps: int = 6,
+            ode_num_steps: int = 10,
             ode_dw: bool = False,
             ode_pw: bool = True,
     ):
