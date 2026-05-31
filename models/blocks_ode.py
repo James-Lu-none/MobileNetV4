@@ -29,7 +29,7 @@ class ChannelwiseODESolver(nn.Module):
             nn.ReLU6()
         )
         
-        self.epsilon = 1.0 / num_layers
+        self.epsilon = 0.1 / num_layers
 
         # init phi and delta t
         self.delta_t = nn.Parameter(torch.empty(num_layers, 1).uniform_(1e-4, 1))
