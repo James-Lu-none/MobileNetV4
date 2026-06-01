@@ -573,8 +573,7 @@ if __name__ == '__main__':
     from timm.models import create_model
 
     parser = argparse.ArgumentParser(description='Multi-model roofline latency comparison')
-    parser.add_argument('--models', nargs='+', required=True,
-                        help='Model names to compare, e.g. --models modelA modelB modelC modelD')
+    parser.add_argument('--models', nargs='+', default=['mobilenetv4_conv_small', 'mobilenetv4_dynamic_conv_small', 'mobilenetv4_ode_conv_small', 'mobilenetv4_dynamic_ode_conv_small'])
     parser.add_argument('--nb-classes', default=5, type=int)
     parser.add_argument('--input-size', default=384, type=int)
     parser.add_argument('--memory-bandwidth', default=47.0, type=float,
