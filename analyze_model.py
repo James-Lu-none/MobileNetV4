@@ -8,16 +8,24 @@ from pathlib import Path
 OI_BOUNDS = [5, 500]
 
 type_markers = {
-    'Conv2d':    'o',
-    'DW-Conv2d': 's',
-    'FC':        '^',
-    'ODE':       'D',
+    'Conv2d':             'o',
+    'DW-Conv2d':          's',
+    'FC':                 '^',
+    'ODE':                'D',
+    'Dynamic-Conv2d':     'p',
+    'Dynamic-DW-Conv2d':  '*',
 }
 
 try:
     from models.blocks_ode import ChannelwiseODESolver as _ODE_CLS
 except ImportError:
     _ODE_CLS = None
+
+try:
+    from models.blocks_dynamic import Dynamic_conv2d as _DYNAMIC_CONV_CLS
+except ImportError:
+    _DYNAMIC_CONV_CLS = None
+
 
 
 def _collect_stats(model, input_size, bytes_per_element=4):
@@ -110,20 +118,76 @@ def _collect_stats(model, input_size, bytes_per_element=4):
             })
         return hook
 
-    # collect ids of modules that live inside an ODE block (to skip them)
-    ode_child_ids = set()
+    def make_dynamic_conv_hook(name):
+        def hook(mod, inp, out):
+            if not isinstance(out, torch.Tensor):
+                return
+            out_h, out_w = out.shape[2], out.shape[3]
+            
+            # The main convolution MACs per sample:
+            conv_macs = (out_h * out_w * mod.out_planes *
+                         (mod.in_planes // mod.groups) *
+                         mod.kernel_size * mod.kernel_size)
+            
+            # Attention overhead:
+            attn_macs = 0
+            if hasattr(mod, 'attention'):
+                attn = mod.attention
+                if hasattr(attn, 'fc1') and hasattr(attn, 'fc2'):
+                    attn_macs += attn.fc1.weight.numel() + attn.fc2.weight.numel()
+            
+            # Weight aggregation overhead:
+            agg_macs = mod.K * mod.out_planes * (mod.in_planes // mod.groups) * mod.kernel_size * mod.kernel_size
+            
+            total_macs = conv_macs + attn_macs + agg_macs
+            
+            # Weight count of the entire Dynamic_conv2d module
+            weight_count = sum(p.numel() for p in mod.parameters())
+            
+            # Activation count (output features size)
+            activation_count = out[0].numel() if out.dim() > 1 else out.numel()
+            
+            memory_bytes = (weight_count + activation_count) * bytes_per_element
+            if memory_bytes == 0:
+                return
+
+            display_type = 'Conv2d'
+            if mod.groups == mod.in_planes:
+                display_type = 'DW-Conv2d'
+
+            stats.append({
+                'name': name,
+                'type': display_type,
+                'macs': total_macs,
+                'weight_count': weight_count,
+                'activation_count': activation_count,
+                'oi_layer': total_macs / memory_bytes,
+            })
+        return hook
+
+    # collect ids of modules that live inside an ODE or Dynamic_conv2d block (to skip them)
+    skip_child_ids = set()
     if _ODE_CLS is not None:
         for _, module in model.named_modules():
             if isinstance(module, _ODE_CLS):
                 for _, child in module.named_modules():
                     if child is not module:
-                        ode_child_ids.add(id(child))
+                        skip_child_ids.add(id(child))
+    if _DYNAMIC_CONV_CLS is not None:
+        for _, module in model.named_modules():
+            if isinstance(module, _DYNAMIC_CONV_CLS):
+                for _, child in module.named_modules():
+                    if child is not module:
+                        skip_child_ids.add(id(child))
 
     for name, module in model.named_modules():
         if _ODE_CLS is not None and isinstance(module, _ODE_CLS):
             h = module.register_forward_hook(make_ode_hook(name))
             hooks.append(h)
-        elif len(list(module.children())) == 0 and id(module) not in ode_child_ids:
+        elif _DYNAMIC_CONV_CLS is not None and isinstance(module, _DYNAMIC_CONV_CLS):
+            h = module.register_forward_hook(make_dynamic_conv_hook(name))
+            hooks.append(h)
+        elif len(list(module.children())) == 0 and id(module) not in skip_child_ids:
             h = module.register_forward_hook(make_hook(name, module))
             hooks.append(h)
 
