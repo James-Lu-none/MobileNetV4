@@ -10,6 +10,10 @@ from .blocks_common import make_divisible, num_groups, LayerScale2d, ModuleType
 __all__ = ['ChannelwiseODESolver', 'ODEUniversalInvertedResidual']
 
 
+if hasattr(torch, '_dynamo') and hasattr(torch._dynamo, 'config'):
+    torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, 128)
+
+
 class ChannelwiseODESolver(nn.Module):
     def __init__(self, in_channels, out_channels, num_layers=10):
         super().__init__()
@@ -37,6 +41,15 @@ class ChannelwiseODESolver(nn.Module):
         torch.nn.init.normal_(self.phi, mean=0, std=0.1)
         torch.nn.init.normal_(self.delta_t, mean=0.4, std=0.005)
 
+        # Compile the inner forward logic if torch.compile is supported
+        if hasattr(torch, 'compile'):
+            try:
+                self._compiled_forward = torch.compile(self._forward, dynamic=False)
+            except Exception:
+                self._compiled_forward = self._forward
+        else:
+            self._compiled_forward = self._forward
+
     def feature_reshape(self, x, b, c):
         x_reshaped = x.view(b, c, -1)  # (b, Cin, H*W)
         x_reshaped = x_reshaped.permute(0, 2, 1).contiguous()  # (b, H*W, Cin)
@@ -50,7 +63,7 @@ class ChannelwiseODESolver(nn.Module):
             x_expanded = x_reshaped.view(b, -1, self.cout_sqrt, self.cout_sqrt)
         return x_expanded
     
-    def forward(self, x):
+    def _forward(self, x):
         B, C, H, W = x.size()
         # (b, Cin, H, W)
         
@@ -81,6 +94,9 @@ class ChannelwiseODESolver(nn.Module):
         y0 = y_out.permute(0, 3, 1, 2).contiguous()
 
         return y0
+
+    def forward(self, x):
+        return self._compiled_forward(x)
 
 
 class ODEUniversalInvertedResidual(nn.Module):
