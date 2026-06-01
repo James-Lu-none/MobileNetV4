@@ -120,13 +120,14 @@ def _collect_stats(model, input_size, beta_gb_per_s, bytes_per_element=4):
             step_norm_oi = step_norm_macs / step_norm_bytes
 
             # Residual update step
-            step_update_macs = 2 * H * W * out_ch
+            # dydt = -y0 + norm_out (1 次減法) 和 y0 = y0 + dt * dydt (1 次乘法，1 次加法)
+            step_update_macs = 3 * H * W * out_ch
             step_update_bytes = (3 * H * W * out_ch + 1) * bytes_per_element
             step_update_oi = step_update_macs / step_update_bytes
 
             # Post-processing
             post_macs = 0
-            post_bytes = 2 * out_ch * H * W * bytes_per_element
+            post_bytes = 3 * out_ch * H * W * bytes_per_element
             post_oi = 0
 
             total_macs = prep_macs + num_steps * (step_matmul_macs + step_norm_macs + step_update_macs) + post_macs
