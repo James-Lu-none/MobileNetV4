@@ -352,7 +352,10 @@ def _collect_stats(model, input_size, beta_gb_per_s, bytes_per_element=4, use_fu
 
     for name, module in model.named_modules():
         if _ODE_CLS is not None and isinstance(module, _ODE_CLS):
-            h = module.register_forward_hook(make_ode_hook(name, beta))
+            if use_fused_ode:
+                h = module.register_forward_hook(make_ode_hook_fused(name, beta))
+            else:
+                h = module.register_forward_hook(make_ode_hook(name, beta))
             hooks.append(h)
         elif _DYNAMIC_CONV_CLS is not None and isinstance(module, _DYNAMIC_CONV_CLS):
             h = module.register_forward_hook(make_dynamic_conv_hook(name, beta))
@@ -595,11 +598,20 @@ if __name__ == '__main__':
         )
         model.reset_classifier(num_classes=args.nb_classes)
         model.to(device)
-        stats = _collect_stats(model, args.input_size, args.memory_bandwidth)
+        
+        # Standard collection
+        stats = _collect_stats(model, args.input_size, args.memory_bandwidth, use_fused_ode=False)
         all_stats[model_name] = stats
-        print(f"[analyze_model]   -> {len(stats)} layers collected")
-
-        # Analyze and save individual model stats (CSV and Plot)
+        print(f"[analyze_model]   -> {len(stats)} layers collected for {model_name}")
         analyze_layer_stats(model_name, stats, args.memory_bandwidth, args.output_dir)
+        
+        # If it is an ODE model, also collect and analyze the fused variant
+        if 'ode' in model_name:
+            fused_name = model_name + "_fused"
+            print(f"[analyze_model] Collecting fused variant: {fused_name}")
+            stats_fused = _collect_stats(model, args.input_size, args.memory_bandwidth, use_fused_ode=True)
+            all_stats[fused_name] = stats_fused
+            print(f"[analyze_model]   -> {len(stats_fused)} layers collected for {fused_name}")
+            analyze_layer_stats(fused_name, stats_fused, args.memory_bandwidth, args.output_dir)
 
     _plot_comparison(all_stats, args.memory_bandwidth, args.output_dir)
