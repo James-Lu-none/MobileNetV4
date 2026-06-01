@@ -14,6 +14,7 @@ type_markers = {
     'DW-Conv2d':          's',
     'FC':                 '^',
     'ODE':                'D',
+    'ODE_Fused':          'd',
     'Dynamic-Conv2d':     'p',
     'Dynamic-DW-Conv2d':  '*',
 }
@@ -30,7 +31,7 @@ except ImportError:
 
 
 
-def _collect_stats(model, input_size, beta_gb_per_s, bytes_per_element=4):
+def _collect_stats(model, input_size, beta_gb_per_s, bytes_per_element=4, use_fused_ode=False):
     stats = []
     hooks = []
     beta = beta_gb_per_s * 1e9
@@ -163,6 +164,85 @@ def _collect_stats(model, input_size, beta_gb_per_s, bytes_per_element=4):
                 'activation_count': activation_count,
                 'oi_layer': effective_oi,
             }
+            for oi_bound in OI_BOUNDS:
+                stat_entry[f'latency_ns_oi{oi_bound}'] = latencies_ns[oi_bound]
+                stat_entry[f'latency_us_oi{oi_bound}'] = latencies_ns[oi_bound] / 1000.0
+
+            stats.append(stat_entry)
+        return hook
+
+    def make_ode_hook_fused(name, beta):
+        def hook(mod, inp, out):
+            if not isinstance(out, torch.Tensor):
+                return
+            
+            _, _, H, W = out.shape
+            num_steps   = mod.num_layers
+            cout_sqrt   = mod.cout_sqrt
+            out_ch      = mod.out_channels
+            cin_ch      = mod.in_channels
+
+            if cin_ch != out_ch:
+                prep_macs = 4 * H * W * out_ch
+                prep_bytes = (cin_ch * H * W + out_ch * H * W) * bytes_per_element
+            else:
+                prep_macs = 0
+                prep_bytes = 2 * out_ch * H * W * bytes_per_element
+            
+            prep_oi = prep_macs / prep_bytes if prep_bytes > 0 else 0
+
+            # --- Fully-Fused ODE Kernel ---
+            # Matmul step
+            step_matmul_macs = H * W * (cout_sqrt ** 3)
+            # Norm/relu step
+            step_norm_macs   = 2 * H * W * out_ch
+            # Update step
+            # dydt = -y0 + norm_out (1 次減法) 和 y0 = y0 + dt * dydt (1 次乘法，1 次加法)
+            step_update_macs = 3 * H * W * out_ch
+            loop_macs = num_steps * (step_matmul_macs + step_norm_macs + step_update_macs)
+            
+            # y0_final + x_expanded
+            post_macs = H * W * out_ch 
+            fused_macs = loop_macs + post_macs
+
+            # Memory Bytes
+            # only read LN_weight, LN_bias, dt in each loop, and do not write y_n back to VRAM
+            weight_bytes_per_step = (out_ch + 2 * out_ch + 1) * bytes_per_element
+            loop_weight_bytes = num_steps * weight_bytes_per_step
+            
+            feature_io_bytes = 3 * H * W * out_ch * bytes_per_element
+            
+            fused_bytes = feature_io_bytes + loop_weight_bytes
+            fused_oi = fused_macs / fused_bytes if fused_bytes > 0 else 0
+
+            total_macs = prep_macs + fused_macs
+            total_bytes = prep_bytes + fused_bytes
+            effective_oi = total_macs / total_bytes if total_bytes > 0 else 0
+
+            latencies_ns = {}
+            for oi_bound in OI_BOUNDS:
+                if prep_macs > 0:
+                    prep_lat = prep_macs / (beta * min(prep_oi, oi_bound))
+                else:
+                    prep_lat = prep_bytes / beta
+                
+                fused_lat = fused_macs / (beta * min(fused_oi, oi_bound))
+                latencies_ns[oi_bound] = (prep_lat + fused_lat) * 1e9
+
+            weight_count = (mod.phi.numel()        # num_steps * out_ch
+                            + mod.delta_t.numel()  # num_steps
+                            + 2 * out_ch)          # LayerNorm weight + bias
+            activation_count = H * W * out_ch
+
+            stat_entry = {
+                'name': name,
+                'type': 'ODE_Fused',
+                'macs': total_macs,
+                'weight_count': weight_count,
+                'activation_count': activation_count,
+                'oi_layer': effective_oi,
+            }
+            
             for oi_bound in OI_BOUNDS:
                 stat_entry[f'latency_ns_oi{oi_bound}'] = latencies_ns[oi_bound]
                 stat_entry[f'latency_us_oi{oi_bound}'] = latencies_ns[oi_bound] / 1000.0
