@@ -49,7 +49,8 @@ class DynamicODEUniversalInvertedResidual(nn.Module):
 
         def make_dw(in_c, out_c, k_size, stride_c, groups_c, use_act=True, apply_aa=False):
             padding = pad_type if isinstance(pad_type, int) else (k_size - 1) // 2 * dilation
-            eff_stride = 1 if apply_aa and stride_c > 1 else stride_c
+            use_aa = apply_aa and aa_layer is not None and stride_c > 1
+            eff_stride = 1 if use_aa else stride_c
             if dynamic_dw:
                 conv = Dynamic_conv2d(
                     in_planes=in_c, out_planes=out_c, kernel_size=k_size,
@@ -63,7 +64,7 @@ class DynamicODEUniversalInvertedResidual(nn.Module):
                     dilation=dilation, groups=groups_c, bias=False, **conv_kwargs,
                 )
             norm = norm_act_layer(out_c, inplace=True) if use_act else norm_layer_no_act(out_c)
-            if apply_aa and stride_c > 1:
+            if use_aa:
                 aa = create_aa(aa_layer, channels=out_c, stride=stride_c, enable=True)
                 return nn.Sequential(conv, norm, aa)
             return nn.Sequential(conv, norm)
