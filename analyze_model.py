@@ -203,13 +203,12 @@ def _collect_stats(model, input_size, bytes_per_element=4):
     return stats
 
 
-def analyze_layer_stats(model, input_size, beta_gb_per_s, output_dir, bytes_per_element=4):
+def analyze_layer_stats(model_name, stats, beta_gb_per_s, output_dir, bytes_per_element=4):
     """Single-model roofline analysis: saves CSV and plot."""
     beta = beta_gb_per_s * 1e9
-    stats = _collect_stats(model, input_size, bytes_per_element)
 
     if not stats:
-        print("[analyze_model] No supported layers found.")
+        print(f"[analyze_model] No supported layers found for {model_name}.")
         return
 
     output_dir = Path(output_dir)
@@ -222,7 +221,7 @@ def analyze_layer_stats(model, input_size, beta_gb_per_s, output_dir, bytes_per_
             row[f'latency_ns_oi{oi_bound}'] = s['macs'] / (beta * eff_oi) * 1e9
         csv_rows.append(row)
 
-    csv_path = output_dir / "layer_stats.csv"
+    csv_path = output_dir / f"{model_name}_layer_stats.csv"
     with open(csv_path, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=csv_rows[0].keys())
         writer.writeheader()
@@ -236,7 +235,7 @@ def analyze_layer_stats(model, input_size, beta_gb_per_s, output_dir, bytes_per_
     cmap = mcolors.LinearSegmentedColormap.from_list(
         'black_orange_yellow', ['black', 'darkorange', 'yellow']
     )
-    oi_values = np.array([s['oi_layer'] for s in stats])
+    oi_values = np.array([s['oi_layer'] for s in stats if s['type'] in type_markers])
     norm = mcolors.LogNorm(vmin=oi_values.min(), vmax=oi_values.max())
 
     fig, axes = plt.subplots(2, 1, figsize=(12, 10))
@@ -264,7 +263,7 @@ def analyze_layer_stats(model, input_size, beta_gb_per_s, output_dir, bytes_per_
         ax.legend(handles=legend_handles, loc='upper left', fontsize=8, framealpha=0.7)
         ax.set_xlabel('Layer')
         ax.set_ylabel('Predicted Roofline Latency (us)')
-        ax.set_title(f'OI bound = {oi_bound} MAC/byte')
+        ax.set_title(f'Model: {model_name} | OI bound = {oi_bound} MAC/byte')
         ax.grid(True, linestyle='--', alpha=0.4)
 
         sm = cm.ScalarMappable(cmap=cmap, norm=norm)
@@ -273,7 +272,7 @@ def analyze_layer_stats(model, input_size, beta_gb_per_s, output_dir, bytes_per_
         cbar.set_label('OI (MAC/byte)', fontsize=8)
 
     plt.tight_layout()
-    plot_path = output_dir / "layer_latency.png"
+    plot_path = output_dir / f"{model_name}_layer_latency.png"
     fig.savefig(plot_path, dpi=150)
     plt.close(fig)
     print(f"[analyze_model] Latency plot saved to {plot_path}")
@@ -391,5 +390,8 @@ if __name__ == '__main__':
         stats = _collect_stats(model, args.input_size)
         all_stats[model_name] = stats
         print(f"[analyze_model]   -> {len(stats)} layers collected")
+
+        # Analyze and save individual model stats (CSV and Plot)
+        analyze_layer_stats(model_name, stats, args.memory_bandwidth, args.output_dir)
 
     _plot_comparison(all_stats, args.memory_bandwidth, args.output_dir)
