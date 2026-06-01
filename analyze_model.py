@@ -10,6 +10,7 @@ OI_BOUNDS = [5, 500]
 
 type_markers = {
     'Conv2d':             'o',
+    'PW-Conv2d':          'v',
     'DW-Conv2d':          's',
     'FC':                 '^',
     'ODE':                'D',
@@ -56,6 +57,8 @@ def _collect_stats(model, input_size, bytes_per_element=4):
                         mod.kernel_size[0] * mod.kernel_size[1])
                 if mod.groups == mod.in_channels:
                     display_type = 'DW-Conv2d'
+                elif mod.kernel_size[0] == 1 and mod.kernel_size[1] == 1:
+                    display_type = 'PW-Conv2d'
             elif isinstance(mod, nn.ConvTranspose2d):
                 out_h, out_w = out.shape[2], out.shape[3]
                 macs = (out_h * out_w * mod.out_channels *
