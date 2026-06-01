@@ -471,7 +471,7 @@ def analyze_layer_stats(model_name, stats, beta_gb_per_s, output_dir, bytes_per_
     print(f"[analyze_model] Latency plot saved to {plot_path}")
 
 
-def _plot_comparison(all_stats, beta_gb_per_s, output_dir, bytes_per_element=4):
+def _plot_comparison(all_stats, beta_gb_per_s, output_dir, filename="comparison_latency.png", bytes_per_element=4):
     import matplotlib.colors as mcolors
     import numpy as np
 
@@ -557,7 +557,7 @@ def _plot_comparison(all_stats, beta_gb_per_s, output_dir, bytes_per_element=4):
     fig.text(0.01, gap_center, row_labels[1],
              va='center', ha='left', fontsize=9, fontweight='bold')
 
-    plot_path = output_dir / "comparison_latency.png"
+    plot_path = output_dir / filename
     fig.savefig(plot_path, dpi=150)
     plt.close(fig)
     print(f"[analyze_model] Comparison plot saved to {plot_path}")
@@ -614,4 +614,16 @@ if __name__ == '__main__':
             print(f"[analyze_model]   -> {len(stats_fused)} layers collected for {fused_name}")
             analyze_layer_stats(fused_name, stats_fused, args.memory_bandwidth, args.output_dir)
 
-    _plot_comparison(all_stats, args.memory_bandwidth, args.output_dir)
+    # Plot traditional comparison (original models, using standard ODE if any)
+    traditional_stats = {m: all_stats[m] for m in args.models if m in all_stats}
+    _plot_comparison(traditional_stats, args.memory_bandwidth, args.output_dir, filename="comparison_latency.png")
+
+    # Plot fused comparison (replacing ODE models with their fused variants)
+    fused_stats = {}
+    for m in args.models:
+        fused_m = m + "_fused"
+        if fused_m in all_stats:
+            fused_stats[fused_m] = all_stats[fused_m]
+        elif m in all_stats:
+            fused_stats[m] = all_stats[m]
+    _plot_comparison(fused_stats, args.memory_bandwidth, args.output_dir, filename="comparison_latency_fused.png")
