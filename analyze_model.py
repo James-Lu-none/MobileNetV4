@@ -151,9 +151,9 @@ def _collect_stats(model, input_size, bytes_per_element=4):
             if memory_bytes == 0:
                 return
 
-            display_type = 'Conv2d'
+            display_type = 'Dynamic-Conv2d'
             if mod.groups == mod.in_planes:
-                display_type = 'DW-Conv2d'
+                display_type = 'Dynamic-DW-Conv2d'
 
             stats.append({
                 'name': name,
