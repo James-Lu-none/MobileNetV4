@@ -3,6 +3,7 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 import csv
 from pathlib import Path
+import matplotlib.patches as mpatches
 
 
 OI_BOUNDS = [5, 500]
@@ -243,6 +244,9 @@ def analyze_layer_stats(model_name, stats, beta_gb_per_s, output_dir, bytes_per_
     for ax, oi_bound in zip(axes, OI_BOUNDS):
         plotted_types = set()
         scatters = {}
+        type_counts = {}
+        type_latencies = {}
+        total_latency_us = 0.0
         xi = 0
         for s in stats:
             if s['type'] not in type_markers:
@@ -251,15 +255,26 @@ def analyze_layer_stats(model_name, stats, beta_gb_per_s, output_dir, bytes_per_
             marker = type_markers[s['type']]
             color = cmap(norm(s['oi_layer']))
             ax.scatter(xi, latency_us, s=40, marker=marker, color=color, zorder=3)
+            
+            type_counts[s['type']] = type_counts.get(s['type'], 0) + 1
+            type_latencies[s['type']] = type_latencies.get(s['type'], 0.0) + latency_us
+            total_latency_us += latency_us
+            
             if s['type'] not in plotted_types:
                 scatters[s['type']] = marker
                 plotted_types.add(s['type'])
             xi += 1
 
-        legend_handles = [
-            plt.scatter([], [], marker=m, color='gray', s=40, label=t)
-            for t, m in sorted(scatters.items())
-        ]
+        legend_handles = []
+        for t, m in sorted(scatters.items()):
+            count = type_counts[t]
+            lat = type_latencies[t]
+            label = f"{t}: N={count}, {lat:.1f}us"
+            legend_handles.append(ax.scatter([], [], marker=m, color='gray', s=40, label=label))
+            
+        total_label = f"Total Latency: {total_latency_us:.1f}us"
+        legend_handles.append(mpatches.Patch(color='none', label=total_label))
+        
         ax.legend(handles=legend_handles, loc='upper left', fontsize=8, framealpha=0.7)
         ax.set_xlabel('Layer')
         ax.set_ylabel('Predicted Roofline Latency (us)')
@@ -304,6 +319,9 @@ def _plot_comparison(all_stats, beta_gb_per_s, output_dir, bytes_per_element=4):
         for row, oi_bound in enumerate(OI_BOUNDS):
             ax = axes[row][col]
             plotted_types = set()
+            type_counts = {}
+            type_latencies = {}
+            total_latency_us = 0.0
             xi = 0
             for s in stats:
                 if s['type'] not in type_markers:
@@ -312,14 +330,26 @@ def _plot_comparison(all_stats, beta_gb_per_s, output_dir, bytes_per_element=4):
                 marker = type_markers[s['type']]
                 color = cmap(norm(s['oi_layer']))
                 ax.scatter(xi, latency_us, s=40, marker=marker, color=color, zorder=3)
+                
+                type_counts[s['type']] = type_counts.get(s['type'], 0) + 1
+                type_latencies[s['type']] = type_latencies.get(s['type'], 0.0) + latency_us
+                total_latency_us += latency_us
+                
                 plotted_types.add(s['type'])
                 xi += 1
 
-            legend_handles = [
-                plt.scatter([], [], marker=type_markers[t], color='gray', s=40, label=t)
-                for t in sorted(plotted_types)
-            ]
-            ax.legend(handles=legend_handles, loc='upper left', fontsize=7, framealpha=0.7)
+            legend_handles = []
+            for t in sorted(plotted_types):
+                count = type_counts[t]
+                lat = type_latencies[t]
+                marker = type_markers[t]
+                label = f"{t}: N={count}, {lat:.1f}us"
+                legend_handles.append(ax.scatter([], [], marker=marker, color='gray', s=40, label=label))
+                
+            total_label = f"Total: {total_latency_us:.1f}us"
+            legend_handles.append(mpatches.Patch(color='none', label=total_label))
+            
+            ax.legend(handles=legend_handles, loc='upper left', fontsize=6, framealpha=0.7)
             if row == 0:
                 ax.set_title(model_name, fontsize=9, fontweight='bold')
             ax.set_xlabel('Layer')
