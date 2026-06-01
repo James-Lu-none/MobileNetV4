@@ -30,9 +30,10 @@ except ImportError:
 
 
 
-def _collect_stats(model, input_size, bytes_per_element=4):
+def _collect_stats(model, input_size, beta_gb_per_s, bytes_per_element=4):
     stats = []
     hooks = []
+    beta = beta_gb_per_s * 1e9
 
     def make_hook(name, module):
         def hook(mod, inp, out):
@@ -88,7 +89,7 @@ def _collect_stats(model, input_size, bytes_per_element=4):
 
         return hook
 
-    def make_ode_hook(name):
+    def make_ode_hook(name, beta):
         def hook(mod, inp, out):
             if not isinstance(out, torch.Tensor):
                 return
@@ -96,80 +97,164 @@ def _collect_stats(model, input_size, bytes_per_element=4):
             num_steps   = mod.num_layers
             cout_sqrt   = mod.cout_sqrt
             out_ch      = mod.out_channels
+            cin_ch      = mod.in_channels
 
-            # matmul: (H*W, cout_sqrt, cout_sqrt) @ (cout_sqrt, cout_sqrt) per step
-            matmul_macs = H * W * cout_sqrt ** 3
-            # LayerNorm inside norm_relu per step
-            ln_macs     = 2 * H * W * out_ch
-            macs        = num_steps * (matmul_macs + ln_macs)
+            # Bilinear interpolation if cin != out
+            if cin_ch != out_ch:
+                prep_macs = 4 * H * W * out_ch
+                prep_bytes = (cin_ch * H * W + out_ch * H * W) * bytes_per_element
+            else:
+                prep_macs = 0
+                prep_bytes = 2 * out_ch * H * W * bytes_per_element
+            
+            prep_oi = prep_macs / prep_bytes if prep_bytes > 0 else 0
+
+            # Matmul step
+            step_matmul_macs = H * W * (cout_sqrt ** 3)
+            step_matmul_bytes = (2 * H * W * out_ch + out_ch) * bytes_per_element
+            step_matmul_oi = step_matmul_macs / step_matmul_bytes
+
+            # Norm/relu step
+            step_norm_macs = 2 * H * W * out_ch
+            step_norm_bytes = (2 * H * W * out_ch + 2 * out_ch) * bytes_per_element
+            step_norm_oi = step_norm_macs / step_norm_bytes
+
+            # Residual update step
+            step_update_macs = 2 * H * W * out_ch
+            step_update_bytes = (3 * H * W * out_ch + 1) * bytes_per_element
+            step_update_oi = step_update_macs / step_update_bytes
+
+            # Post-processing
+            post_macs = 0
+            post_bytes = 2 * out_ch * H * W * bytes_per_element
+            post_oi = 0
+
+            total_macs = prep_macs + num_steps * (step_matmul_macs + step_norm_macs + step_update_macs) + post_macs
+            total_bytes = prep_bytes + num_steps * (step_matmul_bytes + step_norm_bytes + step_update_bytes) + post_bytes
+            effective_oi = total_macs / total_bytes if total_bytes > 0 else 0
+
+            latencies_ns = {}
+            for oi_bound in OI_BOUNDS:
+                if prep_macs > 0:
+                    prep_lat = prep_macs / (beta * min(prep_oi, oi_bound))
+                else:
+                    prep_lat = prep_bytes / beta
+                
+                step_matmul_lat = step_matmul_macs / (beta * min(step_matmul_oi, oi_bound))
+                step_norm_lat = step_norm_macs / (beta * min(step_norm_oi, oi_bound))
+                step_update_lat = step_update_macs / (beta * min(step_update_oi, oi_bound))
+                loop_lat = num_steps * (step_matmul_lat + step_norm_lat + step_update_lat)
+                
+                post_lat = post_bytes / beta
+                
+                latencies_ns[oi_bound] = (prep_lat + loop_lat + post_lat) * 1e9
 
             weight_count = (mod.phi.numel()        # num_steps * out_ch
                             + mod.delta_t.numel()  # num_steps
                             + 2 * out_ch)          # LayerNorm weight + bias
             activation_count = H * W * out_ch
 
-            memory_bytes = (weight_count + activation_count) * bytes_per_element
-            if memory_bytes == 0:
-                return
-
-            stats.append({
+            stat_entry = {
                 'name': name,
                 'type': 'ODE',
-                'macs': macs,
+                'macs': total_macs,
                 'weight_count': weight_count,
                 'activation_count': activation_count,
-                'oi_layer': macs / memory_bytes,
-            })
+                'oi_layer': effective_oi,
+            }
+            for oi_bound in OI_BOUNDS:
+                stat_entry[f'latency_ns_oi{oi_bound}'] = latencies_ns[oi_bound]
+                stat_entry[f'latency_us_oi{oi_bound}'] = latencies_ns[oi_bound] / 1000.0
+
+            stats.append(stat_entry)
         return hook
 
-    def make_dynamic_conv_hook(name):
+    def make_dynamic_conv_hook(name, beta):
         def hook(mod, inp, out):
             if not isinstance(out, torch.Tensor):
                 return
             out_h, out_w = out.shape[2], out.shape[3]
             
-            # The main convolution MACs per sample:
-            conv_macs = (out_h * out_w * mod.out_planes *
-                         (mod.in_planes // mod.groups) *
-                         mod.kernel_size * mod.kernel_size)
+            in_planes = mod.in_planes
+            out_planes = mod.out_planes
+            kernel_size = mod.kernel_size
+            groups = mod.groups
+            K = mod.K
             
-            # Attention overhead:
-            attn_macs = 0
-            if hasattr(mod, 'attention'):
-                attn = mod.attention
-                if hasattr(attn, 'fc1') and hasattr(attn, 'fc2'):
-                    attn_macs += attn.fc1.weight.numel() + attn.fc2.weight.numel()
+            hidden_planes = K
+            if hasattr(mod, 'attention') and hasattr(mod.attention, 'fc1'):
+                hidden_planes = mod.attention.fc1.out_channels
+
+            # Attention: avgpool + fc1 + fc2 + softmax
+            attn_avg_macs = in_planes * out_h * out_w
+            attn_avg_bytes = (in_planes * out_h * out_w + in_planes) * bytes_per_element
+            attn_avg_oi = attn_avg_macs / attn_avg_bytes if attn_avg_bytes > 0 else 0
             
-            # Weight aggregation overhead:
-            agg_macs = mod.K * mod.out_planes * (mod.in_planes // mod.groups) * mod.kernel_size * mod.kernel_size
+            attn_fc1_macs = in_planes * hidden_planes
+            attn_fc1_bytes = (in_planes + in_planes * hidden_planes + hidden_planes) * bytes_per_element
+            attn_fc1_oi = attn_fc1_macs / attn_fc1_bytes if attn_fc1_bytes > 0 else 0
             
-            total_macs = conv_macs + attn_macs + agg_macs
+            attn_fc2_macs = hidden_planes * K
+            attn_fc2_bytes = (hidden_planes + hidden_planes * K + 2 * K) * bytes_per_element
+            attn_fc2_oi = attn_fc2_macs / attn_fc2_bytes if attn_fc2_bytes > 0 else 0
             
-            # Weight count of the entire Dynamic_conv2d module
+            attn_soft_macs = K
+            attn_soft_bytes = 2 * K * bytes_per_element
+            attn_soft_oi = attn_soft_macs / attn_soft_bytes if attn_soft_bytes > 0 else 0
+            
+            # Weight aggregation
+            agg_macs = K * out_planes * (in_planes // groups) * kernel_size * kernel_size
+            agg_bytes = (K + (K + 1) * out_planes * (in_planes // groups) * kernel_size * kernel_size) * bytes_per_element
+            agg_oi = agg_macs / agg_bytes if agg_bytes > 0 else 0
+            
+            # Convolution
+            conv_macs = out_h * out_w * out_planes * (in_planes // groups) * kernel_size * kernel_size
+            conv_bytes = (in_planes * out_h * out_w + 
+                          out_planes * (in_planes // groups) * kernel_size * kernel_size + 
+                          out_planes * out_h * out_w) * bytes_per_element
+            conv_oi = conv_macs / conv_bytes if conv_bytes > 0 else 0
+
+            total_macs = (attn_avg_macs + attn_fc1_macs + attn_fc2_macs + attn_soft_macs + 
+                          agg_macs + conv_macs)
+            total_bytes = (attn_avg_bytes + attn_fc1_bytes + attn_fc2_bytes + attn_soft_bytes + 
+                           agg_bytes + conv_bytes)
+            effective_oi = total_macs / total_bytes if total_bytes > 0 else 0
+
+            latencies_ns = {}
+            for oi_bound in OI_BOUNDS:
+                attn_avg_lat = attn_avg_macs / (beta * min(attn_avg_oi, oi_bound)) if attn_avg_macs > 0 else attn_avg_bytes / beta
+                attn_fc1_lat = attn_fc1_macs / (beta * min(attn_fc1_oi, oi_bound)) if attn_fc1_macs > 0 else attn_fc1_bytes / beta
+                attn_fc2_lat = attn_fc2_macs / (beta * min(attn_fc2_oi, oi_bound)) if attn_fc2_macs > 0 else attn_fc2_bytes / beta
+                attn_soft_lat = attn_soft_macs / (beta * min(attn_soft_oi, oi_bound)) if attn_soft_macs > 0 else attn_soft_bytes / beta
+                attn_lat = attn_avg_lat + attn_fc1_lat + attn_fc2_lat + attn_soft_lat
+                
+                agg_lat = agg_macs / (beta * min(agg_oi, oi_bound)) if agg_macs > 0 else agg_bytes / beta
+                conv_lat = conv_macs / (beta * min(conv_oi, oi_bound)) if conv_macs > 0 else conv_bytes / beta
+                
+                latencies_ns[oi_bound] = (attn_lat + agg_lat + conv_lat) * 1e9
+
             weight_count = sum(p.numel() for p in mod.parameters())
-            
-            # Activation count (output features size)
             activation_count = out[0].numel() if out.dim() > 1 else out.numel()
-            
-            memory_bytes = (weight_count + activation_count) * bytes_per_element
-            if memory_bytes == 0:
-                return
 
             display_type = 'Dynamic-Conv2d'
-            if mod.groups == mod.in_planes:
+            if groups == in_planes:
                 display_type = 'Dynamic-DW-Conv2d'
 
-            stats.append({
+            stat_entry = {
                 'name': name,
                 'type': display_type,
                 'macs': total_macs,
                 'weight_count': weight_count,
                 'activation_count': activation_count,
-                'oi_layer': total_macs / memory_bytes,
-            })
+                'oi_layer': effective_oi,
+            }
+            for oi_bound in OI_BOUNDS:
+                stat_entry[f'latency_ns_oi{oi_bound}'] = latencies_ns[oi_bound]
+                stat_entry[f'latency_us_oi{oi_bound}'] = latencies_ns[oi_bound] / 1000.0
+
+            stats.append(stat_entry)
         return hook
 
-    # collect ids of modules that live inside an ODE or Dynamic_conv2d block (to skip them)
     skip_child_ids = set()
     if _ODE_CLS is not None:
         for _, module in model.named_modules():
@@ -186,10 +271,10 @@ def _collect_stats(model, input_size, bytes_per_element=4):
 
     for name, module in model.named_modules():
         if _ODE_CLS is not None and isinstance(module, _ODE_CLS):
-            h = module.register_forward_hook(make_ode_hook(name))
+            h = module.register_forward_hook(make_ode_hook(name, beta))
             hooks.append(h)
         elif _DYNAMIC_CONV_CLS is not None and isinstance(module, _DYNAMIC_CONV_CLS):
-            h = module.register_forward_hook(make_dynamic_conv_hook(name))
+            h = module.register_forward_hook(make_dynamic_conv_hook(name, beta))
             hooks.append(h)
         elif len(list(module.children())) == 0 and id(module) not in skip_child_ids:
             h = module.register_forward_hook(make_hook(name, module))
@@ -221,8 +306,11 @@ def analyze_layer_stats(model_name, stats, beta_gb_per_s, output_dir, bytes_per_
     for s in stats:
         row = {k: s[k] for k in ('name', 'type', 'macs', 'weight_count', 'activation_count', 'oi_layer')}
         for oi_bound in OI_BOUNDS:
-            eff_oi = min(s['oi_layer'], oi_bound)
-            row[f'latency_ns_oi{oi_bound}'] = s['macs'] / (beta * eff_oi) * 1e9
+            if f'latency_ns_oi{oi_bound}' in s:
+                row[f'latency_ns_oi{oi_bound}'] = s[f'latency_ns_oi{oi_bound}']
+            else:
+                eff_oi = min(s['oi_layer'], oi_bound)
+                row[f'latency_ns_oi{oi_bound}'] = s['macs'] / (beta * eff_oi) * 1e9
         csv_rows.append(row)
 
     csv_path = output_dir / f"{model_name}_layer_stats.csv"
@@ -254,7 +342,10 @@ def analyze_layer_stats(model_name, stats, beta_gb_per_s, output_dir, bytes_per_
         for s in stats:
             if s['type'] not in type_markers:
                 continue
-            latency_us = s['macs'] / (beta * min(s['oi_layer'], oi_bound)) * 1e6
+            if f'latency_us_oi{oi_bound}' in s:
+                latency_us = s[f'latency_us_oi{oi_bound}']
+            else:
+                latency_us = s['macs'] / (beta * min(s['oi_layer'], oi_bound)) * 1e6
             marker = type_markers[s['type']]
             color = cmap(norm(s['oi_layer']))
             ax.scatter(xi, latency_us, s=40, marker=marker, color=color, zorder=3)
@@ -329,7 +420,10 @@ def _plot_comparison(all_stats, beta_gb_per_s, output_dir, bytes_per_element=4):
             for s in stats:
                 if s['type'] not in type_markers:
                     continue
-                latency_us = s['macs'] / (beta * min(s['oi_layer'], oi_bound)) * 1e6
+                if f'latency_us_oi{oi_bound}' in s:
+                    latency_us = s[f'latency_us_oi{oi_bound}']
+                else:
+                    latency_us = s['macs'] / (beta * min(s['oi_layer'], oi_bound)) * 1e6
                 marker = type_markers[s['type']]
                 color = cmap(norm(s['oi_layer']))
                 ax.scatter(xi, latency_us, s=40, marker=marker, color=color, zorder=3)
@@ -420,7 +514,7 @@ if __name__ == '__main__':
         )
         model.reset_classifier(num_classes=args.nb_classes)
         model.to(device)
-        stats = _collect_stats(model, args.input_size)
+        stats = _collect_stats(model, args.input_size, args.memory_bandwidth)
         all_stats[model_name] = stats
         print(f"[analyze_model]   -> {len(stats)} layers collected")
 
