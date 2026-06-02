@@ -563,6 +563,59 @@ def _plot_comparison(all_stats, beta_gb_per_s, output_dir, filename="comparison_
     print(f"[analyze_model] Comparison plot saved to {plot_path}")
 
 
+def _plot_bar_comparison(all_stats, beta_gb_per_s, output_dir, filename="comparison_bar_ode_vs_fused.png"):
+    import numpy as np
+    beta = beta_gb_per_s * 1e9
+    
+    model_names = []
+    latencies_5 = []
+    latencies_500 = []
+    
+    for model_name, stats in all_stats.items():
+        total_5 = 0.0
+        total_500 = 0.0
+        for s in stats:
+            if s['type'] not in type_markers:
+                continue
+            if 'latency_us_oi5' in s:
+                total_5 += s['latency_us_oi5']
+                total_500 += s['latency_us_oi500']
+            else:
+                total_5 += s['macs'] / (beta * min(s['oi_layer'], 5)) * 1e6
+                total_500 += s['macs'] / (beta * min(s['oi_layer'], 500)) * 1e6
+        
+        model_names.append(model_name)
+        latencies_5.append(total_5)
+        latencies_500.append(total_500)
+        
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    
+    x = np.arange(len(model_names))
+    width = 0.35
+    
+    axes[0].bar(x, latencies_5, width, color='skyblue', edgecolor='black')
+    axes[0].set_title('Total Latency (OI Bound = 5 MAC/byte - CPU-like)')
+    axes[0].set_xticks(x)
+    axes[0].set_xticklabels(model_names, rotation=30, ha='right')
+    axes[0].set_ylabel('Latency (us)')
+    for i, v in enumerate(latencies_5):
+        axes[0].text(i, v + max(latencies_5)*0.01, f"{v:.1f} us", ha='center', fontsize=9)
+        
+    axes[1].bar(x, latencies_500, width, color='lightgreen', edgecolor='black')
+    axes[1].set_title('Total Latency (OI Bound = 500 MAC/byte - GPU/Accelerator)')
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels(model_names, rotation=30, ha='right')
+    axes[1].set_ylabel('Latency (us)')
+    for i, v in enumerate(latencies_500):
+        axes[1].text(i, v + max(latencies_500)*0.01, f"{v:.1f} us", ha='center', fontsize=9)
+        
+    plt.tight_layout()
+    plot_path = Path(output_dir) / filename
+    fig.savefig(plot_path, dpi=150)
+    plt.close(fig)
+    print(f"[analyze_model] Bar comparison plot saved to {plot_path}")
+
+
 if __name__ == '__main__':
     import argparse
     import sys
@@ -626,3 +679,16 @@ if __name__ == '__main__':
         elif m in all_stats:
             fused_stats[m] = all_stats[m]
     _plot_comparison(fused_stats, args.memory_bandwidth, args.output_dir, filename="comparison_latency_fused.png")
+
+    # Plot ODE before and after fusion side-by-side comparison (scatter plot and bar chart)
+    ode_comparison_stats = {}
+    for m in args.models:
+        if 'ode' in m:
+            if m in all_stats:
+                ode_comparison_stats[m] = all_stats[m]
+            fused_m = m + "_fused"
+            if fused_m in all_stats:
+                ode_comparison_stats[fused_m] = all_stats[fused_m]
+    if ode_comparison_stats:
+        _plot_comparison(ode_comparison_stats, args.memory_bandwidth, args.output_dir, filename="comparison_latency_ode_vs_fused.png")
+        _plot_bar_comparison(ode_comparison_stats, args.memory_bandwidth, args.output_dir, filename="comparison_bar_ode_vs_fused.png")
