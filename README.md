@@ -1,129 +1,175 @@
-<h1 align='center'>MobileNetV4</h1>
+# Optimizing MobileNetV4: Channelwise ODE Solvers and Dynamic Convolutions
 
-# [MobileNetV4 -- Universal Models for the Mobile Ecosystem](https://arxiv.org/abs/2404.10518)
-## This project is implemented in PyTorch, can be used to train your image-datasets for vision tasks.  
-## [official source code](https://github.com/tensorflow/models/blob/master/official/vision/modeling/backbones/mobilenet.py)  
-## For segmentation tasks, please refer this [github warehouse](https://github.com/jiaowoguanren0615/Segmentation_Factory/blob/main/models/backbones/mobilenetv4.py)  
-## For detection tasks(___Based on DETR Detector architecture___), please refer this [github warehouse](https://github.com/jiaowoguanren0615/Detection-Factory/blob/main/configs/salience_detr_mobilenetv4_medium_800_1333.py)  
-![image](https://github.com/jiaowoguanren0615/MobileNetV4/blob/main/sample_png/mobilenetV4.jpg)  
+This project explores computational capacity, parameter efficiency, and runtime scheduling constraints in deep neural networks on resource-constrained hardware. Using MobileNetV4 as a baseline, we replace pointwise (1x1) convolutions with a recurrent [Channelwise ODE Solver (COS)](./models/blocks_ode.py) and depthwise convolutions with [Dynamic Convolutions](./models/blocks_dynamic.py). 
 
+Additionally, we perform runtime execution profiling to analyze CPU-to-GPU kernel launch overheads introduced by the recurrent ODE solver, and demonstrate how compilation-driven operator fusion via Triton mitigates this latency bottleneck.
 
+---
 
-## Preparation
+## Architectural Modifications & Implementation Details
 
-### Create conda virtual-environment
+### 1. Spatial Mixing: Dynamic Convolution
+* **Source Module**: [models/blocks_dynamic.py](./models/blocks_dynamic.py)
+* **Design**: Standard depthwise convolutions are replaced by Dynamic Convolutions. The module routes input activations through a lightweight attention-based network (`attention2d`) to generate softmax-normalized routing weights. These weights dynamically blend $K$ distinct convolutional kernels (default $K=4$) at runtime.
+* **Trade-off**: Increases spatial representation capacity and parameter counts (+17%), which yields a significant improvement in top-1 validation accuracy (+2.09%).
+
+### 2. Channel Mixing: Channelwise ODE Solver (COS)
+* **Source Module**: [models/blocks_ode.py](./models/blocks_ode.py)
+* **Design**: Pointwise (1x1) convolutions are replaced with a recurrent Channelwise ODE Solver. The layer-to-layer transformations are modeled as a continuous-depth dynamical system solved via Euler integration over $N$ discrete steps (default $N=10$) with step size $\Delta t$:
+  $$\frac{dy}{dt} = -y(t) + f(\text{LN}(y(t) + W_c y(t)))$$
+  $$y_{t+1} = y_t + \Delta t \cdot \left( -y_t + \text{ReLU6}(\text{LayerNorm}(y_t + W_c y_t)) \right)$$
+  We substitute traditional Batch Normalization with Layer Normalization to ensure compatibility with variable evaluation batch sizes.
+* **Trade-off**: The kernel weights $W_c \in \mathbb{R}^{\sqrt{C} \times \sqrt{C}}$ (as opposed to full $C \times C$ pointwise weights) are shared across the recurrent integration steps. This cuts channel-mixing parameter size by 24% while slightly improving validation accuracy (+0.35%).
+
+### 3. Integrated Block: Dynamic ODE Convolution
+* **Source Module**: [models/blocks_dynamic_ode.py](./models/blocks_dynamic_ode.py)
+* **Design**: Combines Dynamic Convolutions in the depthwise (spatial mixing) layers and the Channelwise ODE Solver in the pointwise (channel mixing) layers.
+* **Trade-off**: Achieves an 8% overall reduction in parameters compared to baseline, but final accuracy gains (+0.47%) are lower than using Dynamic Convolutions alone.
+
+---
+
+## Runtime Profiling & Systems Optimization
+
+### The Kernel Launch Bottleneck
+When evaluated in PyTorch's default **Eager Mode**, the recurrent ODE solver incurs severe performance degradation on GPUs, resulting in a **50x slowdown** relative to baseline convolutions.
+* **Launch Queues**: In eager mode, every operation within the 10-step integration loop (matrix multiplications, LayerNorm reductions, ReLU6 activations, and element-wise arithmetic) launches an independent CUDA kernel. This leads to more than 60 sequential kernel launches per UIB block.
+* **CPU-Bound Scheduling**: Because the GPU execution time of these small kernels is extremely short, the CPU launch latency (driver translation, API overhead, context queues) dominates execution. The GPU sits idle waiting for the next launch call.
+* **Memory Traffic**: Eager execution forces the GPU to write intermediate output tensors back to VRAM (DRAM) between consecutive operations, saturating memory bandwidth.
+
+### Operator Fusion via Triton Compilation
+To bypass this scheduling bottleneck, we compile the forward logic using PyTorch Inductor:
+* **Generated Kernel**: [fuzed_ode_triton.py](/fuzed_ode_triton.py)
+* **Mechanics**: Compilation fuses the LayerNorm reductions, ReLU6 thresholds, and Euler updates into a single Triton-optimized GPU kernel per step.
+* **Result**: Fused execution retains intermediate feature tensors in GPU registers and SRAM instead of roundtripping them to VRAM. This reduces global memory traffic and minimizes GPU launch queues, yielding a **3.6x speedup** at the block level.
+
+---
+
+## Experimental Results
+
+### 1. Accuracy and Parameter Count Trade-offs
+Models were trained and evaluated on the Flower classification dataset with an input resolution of $384 \times 384$.
+
+| Model Configuration | Parameters vs. Baseline | Validation Accuracy | Accuracy Change ($\Delta$) |
+| :--- | :---: | :---: | :---: |
+| **mobilenetv4_conv_small** (Baseline) | 100% | 81.71% | Baseline |
+| **mobilenetv4_ode_conv_small** (COS) | -24% | 82.06% | **+0.35%** |
+| **mobilenetv4_dynamic_conv_small** | +17% | 83.80% | **+2.09%** |
+| **mobilenetv4_dynamic_ode_conv_small** | -8% | 82.18% | **+0.47%** |
+
+---
+
+### 2. Hyperparameter Ablation: Integration Step-Limit ($\epsilon$)
+$\epsilon$ establishes a lower bound for the step size $\Delta t$ to prevent gradient vanishing. We compare coarse steps ($\epsilon=1.0$) against fine steps ($\epsilon=0.1$).
+
+| Model Architecture | Epsilon ($\epsilon$) | Max Validation Accuracy | Empirical Analysis & Observations |
+| :--- | :---: | :---: | :--- |
+| **ode_conv** | 1.0 | 79.86% | Coarser steps smooth out loss landscapes during training but restrict the model's capacity to fit fine-grained patterns. |
+| **ode_conv** | 0.1 | 82.06% | Finer integration steps track complex feature trajectories more accurately, though they can introduce transient extreme loss values. |
+| **dynamic_ode_conv** | 1.0 | 76.62% | Coarse step sizes limit optimization convergence when combined with dynamic weights. |
+| **dynamic_ode_conv** | 0.1 | 82.18% | Finer steps ensure stable gradient flow and convergence when joint spatial/channel optimization is active. |
+
+---
+
+### 3. End-to-End Latency Benchmark (Eager Mode)
+*Measured with Batch Size = 32, Input Resolution = 224x224.*
+
+| Model Configuration | CPU Latency | GPU Latency | GPU Slowdown Factor |
+| :--- | :---: | :---: | :---: |
+| **mobilenetv4_conv_small** (Baseline) | 38.671 ms | 1.375 ms | 1.00x |
+| **mobilenetv4_dynamic_conv_small** | 50.545 ms | 2.606 ms | 1.89x |
+| **mobilenetv4_ode_conv_small** | 183.891 ms | 68.259 ms | 49.64x |
+| **mobilenetv4_dynamic_ode_conv_small** | 237.170 ms | 69.300 ms | 50.40x |
+
+---
+
+### 4. GPU Speedup via Triton Operator Fusion
+*Comparison of Eager GPU latency vs. Compiled GPU latency. Batch Size = 32, ODE Steps = 10.*
+
+| Model Configuration | GPU (Eager Mode) | GPU (Compiled/Fused) | Net Speedup |
+| :--- | :---: | :---: | :---: |
+| **mobilenetv4_conv_small** (Baseline) | 1.375 ms | - | - |
+| **mobilenetv4_dynamic_conv_small** | 2.606 ms | - | - |
+| **mobilenetv4_ode_conv_small** | 68.259 ms | 21.701 ms | **3.14x** |
+| **mobilenetv4_dynamic_ode_conv_small** | 69.300 ms | 16.840 ms | **4.11x** |
+
+> **Note**: Compiling the recurrent ODE loops provides an average **3.6x speedup** on GPU.
+
+---
+
+### 5. Block-Level Latency Breakdown
+*Benchmarked on a Stage 3 ODE Block (Batch Size = 32, Channels = 196, H = 14, W = 14, ODE Steps = 10).*
+
+| Block Implementation | Layer Latency | Block Speedup |
+| :--- | :---: | :---: |
+| **Original COS** (Eager PyTorch) | 1.5941 ms | 1.00x |
+| **Fused COS** (Triton Compiled) | 0.4423 ms | **3.60x** |
+
+---
+
+## Project Repository Structure
+
+```
+├── models/
+│   ├── blocks_common.py: Core helper utilities and shared layers.
+│   ├── blocks_dynamic.py: Dynamic Convolution and attention routing logic.
+│   ├── blocks_ode.py: Channelwise ODE Solver block definitions.
+│   ├── blocks_dynamic_ode.py: Integrated Dynamic Conv and ODE UIB block.
+│   ├── build_mobilenet_v4_base.py: Standard baseline model registry.
+│   ├── build_mobilenet_v4_dynamic.py: Dynamic Conv variant registry.
+│   ├── build_mobilenet_v4_ode.py: ODE Conv variant registry.
+│   ├── build_mobilenet_v4_dynamic_ode.py: Dynamic ODE variant registry.
+│   └── model_utils.py: Model arch string parsers and weight initializers.
+├── fuzed_ode_triton.py: Compiled LayerNorm + ReLU6 + ODE update Triton kernel.
+├── benchmark_single_solver.py: Micro-benchmarking script for eager vs. compiled blocks.
+├── cal_inference_time.py: End-to-end model latency measurement utility.
+├── analyze_model.py: Custom roofline latency projections and statistical collector.
+├── plot_learning_curves.py: Log parser to plot loss curves and training schedules.
+├── train_gpu.py: Main training/validation script.
+└── environment.yml: Conda virtual environment configuration.
+```
+
+---
+
+## Setup & Running Guide
+
+### 1. Build the Virtual Environment
+Construct the virtual environment and install PyTorch with CUDA 12.8 support:
 ```bash
 conda env create -f environment.yml
+conda activate mobilenetv4
 pip install torch==2.8.0+cu128 --index-url https://download.pytorch.org/whl/cu128
 ```
 
-### Download the dataset: 
-[flower_dataset](https://www.kaggle.com/datasets/alxmamaev/flowers-recognition).
+### 2. Run Latency Benchmarks
+* **Single Block Micro-benchmark**:
+  Compare Eager PyTorch vs. Compiled Triton performance on a single ODE block:
+  ```bash
+  python benchmark_single_solver.py
+  ```
+* **End-to-End Latency Benchmark**:
+  Benchmark inference time for baseline and modified models across CPU and GPU:
+  ```bash
+  python cal_inference_time.py --batch-size 32
+  ```
+* **Roofline Model Projections**:
+  Run roofline performance estimations on layers:
+  ```bash
+  python analyze_model.py --models mobilenetv4_conv_small mobilenetv4_ode_conv_small --input-size 384
+  ```
 
-## Project Structure
-```
-├── datasets: Load datasets
-    ├── my_dataset.py: Customize reading data sets and define transforms data enhancement methods
-    ├── split_data.py: Define the function to read the image dataset and divide the training-set and test-set
-    ├── threeaugment.py: Additional data augmentation methods
-├── models: MobileNetV4 Model
-    ├── build_mobilenet_v4.py: Construct MobileNetV4 models
-    ├── extra_attention_block.py: MultiScaleAttentionGate module
-├── util:
-    ├── engine.py: Function code for a training/validation process
-    ├── losses.py: Knowledge distillation loss, combined with teacher model (if any)
-    ├── optimizer.py: Define Sophia/MARS optimizer
-    ├── samplers.py: Define the parameter of "sampler" in DataLoader
-    ├── utils.py: Record various indicator information and output and distributed environment
-├── estimate_model.py: Visualized evaluation indicators ROC curve, confusion matrix, classification report, etc.
-└── train_gpu.py: Training model startup file (including infer process)
-```
-
-## Precautions
-Before you use the code to train your own data set, please first enter the ___train_gpu.py___ file and modify the ___data_root___, ___batch_size___, ___num_workers___ and ___nb_classes___ parameters. If you want to draw the confusion matrix and ROC curve, you only need to set the ___predict___ parameter to __True__.  
-If you want to add an extra MSAG(MultiScaleAttentionGate) module, set the __extra_attention_block__ parameter to True.  
-Moreover, you can set the ___opt_auc___ parameter to True if you want to optimize your model for a better performance(maybe~).  
-
-## Use Sophia Optimizer (in util/optimizer.py)
-You can use anther optimizer sophia, just need to change the optimizer in ___train_gpu.py___, for this training sample, can achieve better results
-```
-# optimizer = create_optimizer(args, model_without_ddp)
-optimizer = SophiaG(model.parameters(), lr=2e-4, betas=(0.965, 0.99), rho=0.01, weight_decay=args.weight_decay)
-```
-
-## Train this model
-
-### Parameters Meaning:
-```
-1. nproc_per_node: <The number of GPUs you want to use on each node (machine/server)>
-2. CUDA_VISIBLE_DEVICES: <Specify the index of the GPU corresponding to a single node (machine/server) (starting from 0)>
-3. nnodes: <number of nodes (machine/server)>
-4. node_rank: <node (machine/server) serial number>
-5. master_addr: <master node (machine/server) IP address>
-6. master_port: <master node (machine/server) port number>
-```
-### Transfer Learning:
-Step 1: Download the [pretrained-weights](https://huggingface.co/timm/mobilenetv4_conv_large.e500_r256_in1k#model-comparison)  
-Step 2: Write the ___pre-training weight path___ into the ___args.finetune___ in string format. Adjust ___args.input_size___ parameter based on the model pre-trained on images of different sizes.  
-Step 3: Modify the ___args.freeze_layers___ according to your own GPU memory. If you don't have enough memory, you can set this to True to freeze the weights of the remaining layers except the last layer of classification-head without updating the parameters. If you have enough memory, you can set this to False and not freeze the model weights.  
-
-#### Here is an example for setting parameters:
-![image](https://github.com/jiaowoguanren0615/VisionTransformer/blob/main/sample_png/transfer_learning.jpg)  
-
-### Note: 
-If you want to use multiple GPU for training, whether it is a single machine with multiple GPUs or multiple machines with multiple GPUs, each GPU will divide the batch_size equally. For example, batch_size=4 in my train_gpu.py. If I want to use 2 GPUs for training, it means that the batch_size on each GPU is 4. ___Do not let batch_size=1 on each GPU___, otherwise BN layer maybe report an error. 
-
-### train model with single-machine single-GPU：
-```
-python train_gpu.py
-```
-
-### train model with single-machine multi-GPU：
-```
-python -m torch.distributed.run --nproc_per_node=8 train_gpu.py
-```
-
-### train model with single-machine multi-GPU: 
-(using a specified part of the GPUs: for example, I want to use the second and fourth GPUs)
-```
-CUDA_VISIBLE_DEVICES=1,3 python -m torch.distributed.run --nproc_per_node=2 train_gpu.py
-```
-
-### train model with multi-machine multi-GPU:
-(For the specific number of GPUs on each machine, modify the value of --nproc_per_node. If you want to specify a certain GPU, just add CUDA_VISIBLE_DEVICES= to specify the index number of the GPU before each command. The principle is the same as single-machine multi-GPU training)
-```
-On the first machine: python -m torch.distributed.run --nproc_per_node=1 --nnodes=2 --node_rank=0 --master_addr=<Master node IP address> --master_port=<Master node port number> train_gpu.py
-
-On the second machine: python -m torch.distributed.run --nproc_per_node=1 --nnodes=2 --node_rank=1 --master_addr=<Master node IP address> --master_port=<Master node port number> train_gpu.py
-```
-
-## ONNX Deployment
-### step 1: ONNX export (modify the param of ___output___, ___model___ and ___checkpoint___)  
+### 3. Model Training
+To train the Channelwise ODE Solver model on the Flower dataset:
 ```bash
-python onnx_export.py --model=mobilenetv4_small --output=./mobilenetv4_small.onnx --checkpoint=./output/mobilenetv4_small_best_checkpoint.pth
+# download Flower dataset
+kaggle datasets download -d alxmamaev/flowers-recognition
+unzip flowers.zip -d datasets/flowers/
+
+# base line
+python train_gpu.py --model mobilenetv4_conv_small --data_root ./datasets/flowers --batch-size 32
+# ode conv
+python train_gpu.py --model mobilenetv4_ode_conv_small --data_root ./datasets/flowers --batch-size 32
+# dynamic conv
+python train_gpu.py --model mobilenetv4_dynamic_conv_small --data_root ./datasets/flowers --batch-size 32
+# dynamic ode conv
+python train_gpu.py --model mobilenetv4_dynamic_ode_conv_small --data_root ./datasets/flowers --batch-size 32
 ```
-
-### step2: ONNX optimise
-```bash
-python onnx_optimise.py --model=mobilenetv4_small --output=./mobilenetv4_small_optim.onnx'
-```
-
-### step3: ONNX validate (modify the param of ___data_root___ and ___onnx-input___)  
-```bash
-python onnx_validate.py --data_root=/mnt/d/flower_data --onnx-input=./mobilenetv4_small_optim.onnx
-```
-
-
-## Citation
-```
-@article{qin2024mobilenetv4,
-  title={MobileNetV4-Universal Models for the Mobile Ecosystem},
-  author={Qin, Danfeng and Leichner, Chas and Delakis, Manolis and Fornoni, Marco and Luo, Shixin and Yang, Fan and Wang, Weijun and Banbury, Colby and Ye, Chengxi and Akin, Berkin and others},
-  journal={arXiv preprint arXiv:2404.10518},
-  year={2024}
-}
-```
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=jiaowoguanren0615/MobileNetV4&type=Date)](https://star-history.com/#jiaowoguanren0615/MobileNetV4&Date)
