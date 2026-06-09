@@ -9,7 +9,7 @@ output/*
 
 *.jpg
 *.jpeg
-*.png
+# *.png
 *.zip
 *.tgz
 # ckpt files

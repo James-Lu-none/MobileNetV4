@@ -84,13 +84,12 @@ To bypass this scheduling bottleneck, we compile the forward logic using PyTorch
 ### 1. Accuracy and Parameter Count Trade-offs
 Models were trained and evaluated on the Flower classification dataset with an input resolution of $384 \times 384$.
 
-| Model Configuration | Parameters vs. Baseline | Validation Accuracy | Accuracy Change ($\Delta$) |
-| :--- | :---: | :---: | :---: |
-| **mobilenetv4_conv_small** (Baseline) | 100% | 81.71% | Baseline |
-| **mobilenetv4_ode_conv_small** (COS) | -24% | 82.06% | **+0.35%** |
-| **mobilenetv4_dynamic_conv_small** | +17% | 83.80% | **+2.09%** |
-| **mobilenetv4_dynamic_ode_conv_small** | -8% | 82.18% | **+0.47%** |
-
+| Model Configuration | Parameters vs. Baseline | Validation Accuracy | Accuracy Change ($\Delta$) | Visual |
+| :--- | :---: | :---: | :---: | :---: |
+| **mobilenetv4_conv_small** (Baseline) | 100% | 81.71% | Baseline |![](results/conv_small.png)
+| **mobilenetv4_ode_conv_small** (COS) | -24% | 82.06% | **+0.35%** | ![](results/ode_conv_small.png)
+| **mobilenetv4_dynamic_conv_small** | +17% | 83.80% | **+2.09%** | ![](results/dynamic_conv_small.png)
+| **mobilenetv4_dynamic_ode_conv_small** | -8% | 82.18% | **+0.47%** | ![](results/dynamic_ode_conv_small.png)|
 ---
 
 ### 2. Hyperparameter Ablation: Integration Step-Limit ($\epsilon$)
