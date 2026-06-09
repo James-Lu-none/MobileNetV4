@@ -10,50 +10,56 @@ Additionally, we perform runtime execution profiling to analyze CPU-to-GPU kerne
 
 ### 1. Spatial Mixing: Dynamic Convolution
 * **Source Module**: [models/blocks_dynamic.py](./models/blocks_dynamic.py)
-* **Design**: Standard depthwise convolutions are replaced by Dynamic Convolutions. The module routes input activations $x$ through a lightweight attention-based network (`attention2d`) to generate softmax-normalized routing weights $\pi_k(x)$ for $K$ distinct convolutional kernels $\{W_k\}_{k=1}^K$ (and optional biases $\{b_k\}_{k=1}^K$):
 
-  $$
-  \pi(x) = \text{Softmax}\left( \frac{\mathbf{W}_2 \cdot \text{ReLU}(\mathbf{W}_1 \cdot \text{AvgPool}(x))}{\tau} \right)
-  $$
+**Design**: Standard depthwise convolutions are replaced by Dynamic Convolutions. The module routes input activations $x$ through a lightweight attention-based network (`attention2d`) to generate softmax-normalized routing weights $\pi_k(x)$ for $K$ distinct convolutional kernels $\{W_k\}_{k=1}^K$ (and optional biases $\{b_k\}_{k=1}^K$):
 
-  where $\mathbf{W}_1$ and $\mathbf{W}_2$ represent linear/convolutional projection layers, and $\tau$ is the temperature parameter. The dynamic kernel $\tilde{W}(x)$ and dynamic bias $\tilde{b}(x)$ are aggregated linearly:
+$$
+\pi(x) = \text{Softmax}\left( \frac{\mathbf{W}_2 \cdot \text{ReLU}(\mathbf{W}_1 \cdot \text{AvgPool}(x))}{\tau} \right)
+$$
 
-  $$
-  \tilde{W}(x) = \sum_{k=1}^K \pi_k(x) \cdot W_k, \quad \tilde{b}(x) = \sum_{k=1}^K \pi_k(x) \cdot b_k
-  $$
+where $\mathbf{W}_1$ and $\mathbf{W}_2$ represent linear/convolutional projection layers, and $\tau$ is the temperature parameter. The dynamic kernel $\tilde{W}(x)$ and dynamic bias $\tilde{b}(x)$ are aggregated linearly:
 
-  The input feature maps are then convolved using the aggregated parameters:
+$$
+\tilde{W}(x) = \sum_{k=1}^K \pi_k(x) \cdot W_k, \quad \tilde{b}(x) = \sum_{k=1}^K \pi_k(x) \cdot b_k
+$$
 
-  $$
-  y = \text{Conv2d}(x; \tilde{W}(x), \tilde{b}(x))
-  $$
+The input feature maps are then convolved using the aggregated parameters:
 
-  followed by Batch Normalization (BN) and Activation function:
+$$
+y = \text{Conv2d}(x; \tilde{W}(x), \tilde{b}(x))
+$$
 
-  $$
-  \text{Output} = \text{Activation}(\text{BN}(y))
-  $$
-* **Trade-off**: Increases spatial representation capacity and parameter counts (+17%), which yields a significant improvement in top-1 validation accuracy (+2.09%).
+followed by Batch Normalization (BN) and Activation function:
+
+$$
+\text{Output} = \text{Activation}(\text{BN}(y))
+$$
+
+**Trade-off**: Increases spatial representation capacity and parameter counts (+17%), which yields a significant improvement in top-1 validation accuracy (+2.09%).
 
 ### 2. Channel Mixing: Channelwise ODE Solver (COS)
 * **Source Module**: [models/blocks_ode.py](./models/blocks_ode.py)
-* **Design**: Pointwise (1x1) convolutions are replaced with a recurrent Channelwise ODE Solver. The layer-to-layer transformations are modeled as a continuous-depth dynamical system solved via Euler integration over $N$ discrete steps (default $N=10$) with step size $\Delta t$:
 
-  $$
-  \frac{dy}{dt} = -y(t) + f(\text{LN}(y(t) + W_c y(t)))
-  $$
+**Design**: Pointwise (1x1) convolutions are replaced with a recurrent Channelwise ODE Solver. The layer-to-layer transformations are modeled as a continuous-depth dynamical system solved via Euler integration over $N$ discrete steps (default $N=10$) with step size $\Delta t$:
 
-  $$
-  y_{t+1} = y_t + \Delta t \cdot \left( -y_t + \text{ReLU6}(\text{LayerNorm}(y_t + W_c y_t)) \right)
-  $$
+$$
+\frac{dy}{dt} = -y(t) + f(\text{LN}(y(t) + W_c y(t)))
+$$
 
-  We substitute traditional Batch Normalization with Layer Normalization to ensure compatibility with variable evaluation batch sizes.
-* **Trade-off**: The kernel weights $W_c \in \mathbb{R}^{\sqrt{C} \times \sqrt{C}}$ (as opposed to full $C \times C$ pointwise weights) are shared across the recurrent integration steps. This cuts channel-mixing parameter size by 24% while slightly improving validation accuracy (+0.35%).
+$$
+y_{t+1} = y_t + \Delta t \cdot \left( -y_t + \text{ReLU6}(\text{LayerNorm}(y_t + W_c y_t)) \right)
+$$
+
+We substitute traditional Batch Normalization with Layer Normalization to ensure compatibility with variable evaluation batch sizes.
+
+**Trade-off**: The kernel weights $W_c \in \mathbb{R}^{\sqrt{C} \times \sqrt{C}}$ (as opposed to full $C \times C$ pointwise weights) are shared across the recurrent integration steps. This cuts channel-mixing parameter size by 24% while slightly improving validation accuracy (+0.35%).
 
 ### 3. Integrated Block: Dynamic ODE Convolution
 * **Source Module**: [models/blocks_dynamic_ode.py](./models/blocks_dynamic_ode.py)
-* **Design**: Combines Dynamic Convolutions in the depthwise (spatial mixing) layers and the Channelwise ODE Solver in the pointwise (channel mixing) layers.
-* **Trade-off**: Achieves an 8% overall reduction in parameters compared to baseline, but final accuracy gains (+0.47%) are lower than using Dynamic Convolutions alone.
+
+**Design**: Combines Dynamic Convolutions in the depthwise (spatial mixing) layers and the Channelwise ODE Solver in the pointwise (channel mixing) layers.
+
+**Trade-off**: Achieves an 8% overall reduction in parameters compared to baseline, but final accuracy gains (+0.47%) are lower than using Dynamic Convolutions alone.
 
 ---
 
