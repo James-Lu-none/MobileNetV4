@@ -84,7 +84,7 @@ To bypass this scheduling bottleneck, we compile the forward logic using PyTorch
 ### 1. Accuracy and Parameter Count Trade-offs
 Models were trained and evaluated on the Flower classification dataset with an input resolution of $384 \times 384$.
 
-| Model Configuration | Parameters vs. Baseline | Validation Accuracy | Accuracy Change ($\Delta$) | Visual |
+| Model Configuration | Parameters vs. Baseline | Validation Accuracy | Accuracy Change ($\Delta$) | Image |
 | :--- | :---: | :---: | :---: | :---: |
 | **mobilenetv4_conv_small** (Baseline) | 100% | 81.71% | Baseline |![](results/conv_small.png)
 | **mobilenetv4_ode_conv_small** (COS) | -24% | 82.06% | **+0.35%** | ![](results/ode_conv_small.png)
@@ -95,12 +95,12 @@ Models were trained and evaluated on the Flower classification dataset with an i
 ### 2. Hyperparameter Ablation: Integration Step-Limit ($\epsilon$)
 $\epsilon$ establishes a lower bound for the step size $\Delta t$ to prevent gradient vanishing. We compare coarse steps ($\epsilon=1.0$) against fine steps ($\epsilon=0.1$).
 
-| Model Architecture | Epsilon ($\epsilon$) | Max Validation Accuracy | Empirical Analysis & Observations |
-| :--- | :---: | :---: | :--- |
-| **ode_conv** | 1.0 | 79.86% | Coarser steps smooth out loss landscapes during training but restrict the model's capacity to fit fine-grained patterns. |
-| **ode_conv** | 0.1 | 82.06% | Finer integration steps track complex feature trajectories more accurately, though they can introduce transient extreme loss values. |
-| **dynamic_ode_conv** | 1.0 | 76.62% | Coarse step sizes limit optimization convergence when combined with dynamic weights. |
-| **dynamic_ode_conv** | 0.1 | 82.18% | Finer steps ensure stable gradient flow and convergence when joint spatial/channel optimization is active. |
+| Model Architecture | Epsilon ($\epsilon$) | Max Validation Accuracy | Empirical Analysis & Observations | Image |
+| :--- | :---: | :---: | :--- | :--: |
+| **ode_conv** | 1.0 | 79.86% | Coarser steps smooth out loss landscapes during training but restrict the model's capacity to fit fine-grained patterns. | ![](results/ode_conv_1.png)
+| **ode_conv** | 0.1 | 82.06% | Finer integration steps track complex feature trajectories more accurately, though they can introduce transient extreme loss values. | ![](results/ode_conv_0.1.png)
+| **dynamic_ode_conv** | 1.0 | 76.62% | Coarse step sizes limit optimization convergence when combined with dynamic weights. | ![](results/dynamic_ode_conv_1.png)
+| **dynamic_ode_conv** | 0.1 | 82.18% | Finer steps ensure stable gradient flow and convergence when joint spatial/channel optimization is active. | ![](results/dynamic_ode_conv_0.1.png)
 
 ---
 
@@ -137,6 +137,13 @@ $\epsilon$ establishes a lower bound for the step size $\Delta t$ to prevent gra
 | :--- | :---: | :---: |
 | **Original COS** (Eager PyTorch) | 1.5941 ms | 1.00x |
 | **Fused COS** (Triton Compiled) | 0.4423 ms | **3.60x** |
+
+### 6. Layer-wise Latency Analysis (Roofline Model Estimation)
+*Roofline model estimation with max OI = 500.*
+
+| mobilenetv4_conv_small vs mobilenetv4_ode_conv_small | mobilenetv4_ode_conv_small vs fused mobilenetv4_ode_conv_small | 
+|:---:|:---:|
+| ![](results/conv_vs_without_fuse.png) | ![](results/without_fuse_vs_with_fuse.png) 
 
 ---
 
