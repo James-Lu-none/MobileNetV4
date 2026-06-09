@@ -11,20 +11,42 @@ Additionally, we perform runtime execution profiling to analyze CPU-to-GPU kerne
 ### 1. Spatial Mixing: Dynamic Convolution
 * **Source Module**: [models/blocks_dynamic.py](./models/blocks_dynamic.py)
 * **Design**: Standard depthwise convolutions are replaced by Dynamic Convolutions. The module routes input activations $x$ through a lightweight attention-based network (`attention2d`) to generate softmax-normalized routing weights $\pi_k(x)$ for $K$ distinct convolutional kernels $\{W_k\}_{k=1}^K$ (and optional biases $\{b_k\}_{k=1}^K$):
-  $$\pi(x) = \text{Softmax}\left( \frac{\mathbf{W}_2 \cdot \text{ReLU}(\mathbf{W}_1 \cdot \text{AvgPool}(x))}{\tau} \right)$$
+
+  $$
+  \pi(x) = \text{Softmax}\left( \frac{\mathbf{W}_2 \cdot \text{ReLU}(\mathbf{W}_1 \cdot \text{AvgPool}(x))}{\tau} \right)
+  $$
+
   where $\mathbf{W}_1$ and $\mathbf{W}_2$ represent linear/convolutional projection layers, and $\tau$ is the temperature parameter. The dynamic kernel $\tilde{W}(x)$ and dynamic bias $\tilde{b}(x)$ are aggregated linearly:
-  $$\tilde{W}(x) = \sum_{k=1}^K \pi_k(x) \cdot W_k, \quad \tilde{b}(x) = \sum_{k=1}^K \pi_k(x) \cdot b_k$$
+
+  $$
+  \tilde{W}(x) = \sum_{k=1}^K \pi_k(x) \cdot W_k, \quad \tilde{b}(x) = \sum_{k=1}^K \pi_k(x) \cdot b_k
+  $$
+
   The input feature maps are then convolved using the aggregated parameters:
-  $$y = \text{Conv2d}(x; \tilde{W}(x), \tilde{b}(x))$$
+
+  $$
+  y = \text{Conv2d}(x; \tilde{W}(x), \tilde{b}(x))
+  $$
+
   followed by Batch Normalization (BN) and Activation function:
-  $$\text{Output} = \text{Activation}(\text{BN}(y))$$
+
+  $$
+  \text{Output} = \text{Activation}(\text{BN}(y))
+  $$
 * **Trade-off**: Increases spatial representation capacity and parameter counts (+17%), which yields a significant improvement in top-1 validation accuracy (+2.09%).
 
 ### 2. Channel Mixing: Channelwise ODE Solver (COS)
 * **Source Module**: [models/blocks_ode.py](./models/blocks_ode.py)
 * **Design**: Pointwise (1x1) convolutions are replaced with a recurrent Channelwise ODE Solver. The layer-to-layer transformations are modeled as a continuous-depth dynamical system solved via Euler integration over $N$ discrete steps (default $N=10$) with step size $\Delta t$:
-  $$\frac{dy}{dt} = -y(t) + f(\text{LN}(y(t) + W_c y(t)))$$
-  $$y_{t+1} = y_t + \Delta t \cdot \left( -y_t + \text{ReLU6}(\text{LayerNorm}(y_t + W_c y_t)) \right)$$
+
+  $$
+  \frac{dy}{dt} = -y(t) + f(\text{LN}(y(t) + W_c y(t)))
+  $$
+
+  $$
+  y_{t+1} = y_t + \Delta t \cdot \left( -y_t + \text{ReLU6}(\text{LayerNorm}(y_t + W_c y_t)) \right)
+  $$
+
   We substitute traditional Batch Normalization with Layer Normalization to ensure compatibility with variable evaluation batch sizes.
 * **Trade-off**: The kernel weights $W_c \in \mathbb{R}^{\sqrt{C} \times \sqrt{C}}$ (as opposed to full $C \times C$ pointwise weights) are shared across the recurrent integration steps. This cuts channel-mixing parameter size by 24% while slightly improving validation accuracy (+0.35%).
 
@@ -180,3 +202,16 @@ python train_gpu.py --model mobilenetv4_dynamic_conv_small --data_root ./dataset
 # dynamic ode conv
 python train_gpu.py --model mobilenetv4_dynamic_ode_conv_small --data_root ./datasets/flowers --batch-size 32
 ```
+
+## reference
+
+* Dynamic Convolution: Attention over Convolution Kernels https://arxiv.org/pdf/1912.03458
+* MobileODE: An Extra Lightweight Network https://neurips.cc/virtual/2025/loc/san-diego/poster/115654
+* MobileNetV2 https://arxiv.org/pdf/1801.04381
+* MobileNetV3 https://arxiv.org/pdf/1905.02244
+* MobileNetV4 https://arxiv.org/pdf/2404.10518
+* PyTorch Image Models https://huggingface.co/timm
+* https://medium.com/@tahasamavati/squeeze-and-excitation-explained-387b5981f249
+* https://github.com/tensorflow/models/tree/master/official/vision/modeling/backbones
+* https://github.com/tensorflow/models/blob/d93c7e932de27522b2fa3b115f58d06d6f640537/official/vision/modeling/layers/nn_blocks.py#L1504
+* https://zhuanlan.zhihu.com/p/208519425
