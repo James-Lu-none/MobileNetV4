@@ -10,7 +10,14 @@ Additionally, we perform runtime execution profiling to analyze CPU-to-GPU kerne
 
 ### 1. Spatial Mixing: Dynamic Convolution
 * **Source Module**: [models/blocks_dynamic.py](./models/blocks_dynamic.py)
-* **Design**: Standard depthwise convolutions are replaced by Dynamic Convolutions. The module routes input activations through a lightweight attention-based network (`attention2d`) to generate softmax-normalized routing weights. These weights dynamically blend $K$ distinct convolutional kernels (default $K=4$) at runtime.
+* **Design**: Standard depthwise convolutions are replaced by Dynamic Convolutions. The module routes input activations $x$ through a lightweight attention-based network (`attention2d`) to generate softmax-normalized routing weights $\pi_k(x)$ for $K$ distinct convolutional kernels $\{W_k\}_{k=1}^K$ (and optional biases $\{b_k\}_{k=1}^K$):
+  $$\pi(x) = \text{Softmax}\left( \frac{\mathbf{W}_2 \cdot \text{ReLU}(\mathbf{W}_1 \cdot \text{AvgPool}(x))}{\tau} \right)$$
+  where $\mathbf{W}_1$ and $\mathbf{W}_2$ represent linear/convolutional projection layers, and $\tau$ is the temperature parameter. The dynamic kernel $\tilde{W}(x)$ and dynamic bias $\tilde{b}(x)$ are aggregated linearly:
+  $$\tilde{W}(x) = \sum_{k=1}^K \pi_k(x) \cdot W_k, \quad \tilde{b}(x) = \sum_{k=1}^K \pi_k(x) \cdot b_k$$
+  The input feature maps are then convolved using the aggregated parameters:
+  $$y = \text{Conv2d}(x; \tilde{W}(x), \tilde{b}(x))$$
+  followed by Batch Normalization (BN) and Activation function:
+  $$\text{Output} = \text{Activation}(\text{BN}(y))$$
 * **Trade-off**: Increases spatial representation capacity and parameter counts (+17%), which yields a significant improvement in top-1 validation accuracy (+2.09%).
 
 ### 2. Channel Mixing: Channelwise ODE Solver (COS)
